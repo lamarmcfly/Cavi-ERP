@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cavi:forge.write.approved.v1",
+  "title": "Forge Write Approved",
+  "description": "Emitted by Forge when a proposed write clears review and is cleared to execute. write_id ties it back to the request.",
+  "type": "object",
+  "required": ["tenant_id", "erp_platform", "operation", "approved_by", "approved_at", "write_id"],
+  "additionalProperties": false,
+  "properties": {
+    "tenant_id": { "type": "string", "minLength": 1, "description": "Owning tenant. Never empty." },
+    "erp_platform": { "type": "string", "minLength": 1, "description": "ERP the write targets." },
+    "operation": { "type": "string", "minLength": 1, "description": "Mutation verb being approved." },
+    "approved_by": { "type": "string", "minLength": 1, "description": "Reviewer who approved the write." },
+    "approved_at": { "type": "string", "format": "date-time", "description": "ISO 8601 approval timestamp." },
+    "write_id": { "type": "string", "minLength": 1, "description": "Correlation id shared across the write lifecycle." }
+  }
+}

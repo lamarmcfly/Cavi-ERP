@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cavi:forge.write.completed.v1",
+  "title": "Forge Write Completed",
+  "description": "Emitted by Forge when an approved write has been applied to the ERP. Carries the ERP's confirmation record.",
+  "type": "object",
+  "required": ["tenant_id", "erp_platform", "operation", "write_id", "erp_confirmation", "completed_at"],
+  "additionalProperties": false,
+  "properties": {
+    "tenant_id": { "type": "string", "minLength": 1, "description": "Owning tenant. Never empty." },
+    "erp_platform": { "type": "string", "minLength": 1, "description": "ERP the write was applied to." },
+    "operation": { "type": "string", "minLength": 1, "description": "Mutation verb that executed." },
+    "write_id": { "type": "string", "minLength": 1, "description": "Correlation id shared across the write lifecycle." },
+    "erp_confirmation": { "type": "object", "additionalProperties": true, "description": "Free-form confirmation record returned by the ERP (ids, revision, receipt)." },
+    "completed_at": { "type": "string", "format": "date-time", "description": "ISO 8601 completion timestamp." }
+  }
+}

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,6 +34,18 @@ class Settings(BaseSettings):
 
     # --- Schema registry ---
     schema_registry_dir: str = "schema_registry/schemas"
+
+    # --- Hermes bridge (Beacon alert delivery) ---
+    # The gateway's POST /notify endpoint. Empty string = no real delivery, so
+    # Beacon degrades to log-only (safe default for local/dev + tests).
+    # Accepts the CAVI_-prefixed name or the bare HERMES_WEBHOOK_URL already used
+    # by the n8n container in docker-compose.yml, so both stay in sync.
+    hermes_webhook_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("CAVI_HERMES_WEBHOOK_URL", "HERMES_WEBHOOK_URL"),
+    )
+    # Where Beacon sends human alerts through Hermes. Owner's Telegram chat.
+    beacon_target: str = "telegram:1370595013"
 
     @property
     def postgres_dsn(self) -> str:

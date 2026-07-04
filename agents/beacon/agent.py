@@ -11,6 +11,9 @@ Beacon lists the concrete ones it cares about here.
 from __future__ import annotations
 
 import logging
+from typing import Callable
+
+import httpx
 
 from agents.base import BaseAgent, Event
 from agents.beacon.beacon import (
@@ -19,23 +22,61 @@ from agents.beacon.beacon import (
     LogChannel,
     NotificationChannel,
 )
+from shared.settings import get_settings
 
 log = logging.getLogger("cavi.beacon")
 
-# Where human alerts are delivered. The send_fn is a placeholder — wire it to
-# the Hermes gateway webhook or messages_send in the orchestration layer.
-BEACON_TARGET = "telegram:default"
+# HTTP transport signature: (url, ...) -> response exposing .raise_for_status().
+Poster = Callable[..., httpx.Response]
 
 
-def _placeholder_hermes_sender(target: str, text: str) -> None:
-    # TODO: bridge to the Hermes gateway (webhook) or MCP messages_send.
-    log.info("Beacon -> Hermes (%s): %s", target, text.splitlines()[0])
+def build_hermes_sender(
+    webhook_url: str, *, post: Poster | None = None
+) -> Callable[[str, str], None]:
+    """Build the transport Beacon uses to reach a human through Hermes.
+
+    Delivers by POSTing ``{"target", "message"}`` to the Hermes gateway
+    ``/notify`` endpoint — the same contract the n8n ``deadletter-escalation``
+    workflow speaks (see middleware/n8n/workflows/deadletter-escalation.json),
+    so the Python and n8n escalation paths stay interchangeable.
+
+    A delivery failure must never take Beacon (or the agent) down — surviving
+    failures elsewhere is Beacon's whole job — so network/HTTP errors are logged
+    at ERROR and swallowed. With no webhook configured, delivery degrades to
+    log-only, keeping local/dev and tests side-effect free.
+
+    ``post`` is injectable so tests can assert the payload without real HTTP.
+    """
+    poster = post or httpx.post
+
+    def send(target: str, text: str) -> None:
+        if not webhook_url:
+            log.info(
+                "Beacon -> Hermes (%s) [no webhook configured]: %s",
+                target, text.splitlines()[0],
+            )
+            return
+        try:
+            response = poster(
+                webhook_url,
+                json={"target": target, "message": text},
+                timeout=10.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            log.error("Beacon -> Hermes delivery to %s failed: %s", target, exc)
+
+    return send
 
 
 def _default_beacon() -> Beacon:
+    settings = get_settings()
     channels: dict[str, NotificationChannel] = {
         "log": LogChannel(),
-        "hermes": HermesChannel(BEACON_TARGET, _placeholder_hermes_sender),
+        "hermes": HermesChannel(
+            settings.beacon_target,
+            build_hermes_sender(settings.hermes_webhook_url),
+        ),
     }
     return Beacon(channels)
 
