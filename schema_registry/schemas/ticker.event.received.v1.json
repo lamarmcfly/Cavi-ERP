@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cavi:ticker.event.received.v1",
+  "title": "Ticker Event Received",
+  "description": "Emitted by Ticker when an inbound ERP webhook/event is ingested. Carries the raw payload and the internal route it was dispatched to.",
+  "type": "object",
+  "required": ["tenant_id", "erp_platform", "event_type", "raw_payload", "received_at", "routed_to"],
+  "additionalProperties": false,
+  "properties": {
+    "tenant_id": { "type": "string", "minLength": 1, "description": "Owning tenant. Never empty." },
+    "erp_platform": { "type": "string", "minLength": 1, "description": "ERP that emitted the event." },
+    "event_type": { "type": "string", "minLength": 1, "description": "Source event name as reported by the ERP." },
+    "raw_payload": { "type": "object", "additionalProperties": true, "description": "Verbatim inbound payload before normalization." },
+    "received_at": { "type": "string", "format": "date-time", "description": "ISO 8601 ingestion timestamp." },
+    "routed_to": { "type": "string", "minLength": 1, "description": "Internal subject/handler the event was dispatched to." }
+  }
+}

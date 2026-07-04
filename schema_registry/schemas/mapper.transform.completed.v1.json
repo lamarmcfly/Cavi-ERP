@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cavi:mapper.transform.completed.v1",
+  "title": "Mapper Transform Completed",
+  "description": "Emitted by Mapper when a source ERP record is successfully transformed into a target schema. input_hash pins the source for idempotency.",
+  "type": "object",
+  "required": ["tenant_id", "source_erp", "source_schema", "target_schema", "input_hash", "output", "transformed_at"],
+  "additionalProperties": false,
+  "properties": {
+    "tenant_id": { "type": "string", "minLength": 1, "description": "Owning tenant. Never empty." },
+    "source_erp": { "type": "string", "minLength": 1, "description": "ERP the source record came from." },
+    "source_schema": { "type": "string", "minLength": 1, "description": "Schema/version of the input record." },
+    "target_schema": { "type": "string", "minLength": 1, "description": "Schema/version produced by the transform." },
+    "input_hash": { "type": "string", "minLength": 1, "description": "Stable hash of the source input for dedupe/idempotency." },
+    "output": { "type": "object", "additionalProperties": true, "description": "Free-form transformed record in the target schema." },
+    "transformed_at": { "type": "string", "format": "date-time", "description": "ISO 8601 transform timestamp." }
+  }
+}

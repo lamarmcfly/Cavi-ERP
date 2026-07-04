@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cavi:mapper.transform.failed.v1",
+  "title": "Mapper Transform Failed",
+  "description": "Emitted by Mapper when a source ERP record cannot be transformed (unknown field, validation failure, unsupported source schema).",
+  "type": "object",
+  "required": ["tenant_id", "source_erp", "source_schema", "reason", "failed_at"],
+  "additionalProperties": false,
+  "properties": {
+    "tenant_id": { "type": "string", "minLength": 1, "description": "Owning tenant. Never empty." },
+    "source_erp": { "type": "string", "minLength": 1, "description": "ERP the source record came from." },
+    "source_schema": { "type": "string", "minLength": 1, "description": "Schema/version of the input record." },
+    "reason": { "type": "string", "minLength": 1, "description": "Human-readable failure cause." },
+    "failed_at": { "type": "string", "format": "date-time", "description": "ISO 8601 failure timestamp." }
+  }
+}

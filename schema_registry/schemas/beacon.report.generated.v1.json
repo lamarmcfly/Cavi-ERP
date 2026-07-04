@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cavi:beacon.report.generated.v1",
+  "title": "Beacon Report Generated",
+  "description": "Emitted by Beacon when a KPI/period report is generated and ready for delivery.",
+  "type": "object",
+  "required": ["tenant_id", "report_type", "kpis", "period_start", "period_end", "generated_at", "delivery_targets"],
+  "additionalProperties": false,
+  "properties": {
+    "tenant_id": { "type": "string", "minLength": 1, "description": "Owning tenant. Never empty." },
+    "report_type": { "type": "string", "minLength": 1, "description": "Report kind (e.g. weekly_ops, ar_aging, throughput)." },
+    "kpis": { "type": "object", "additionalProperties": true, "description": "Free-form metric map for the reporting period." },
+    "period_start": { "type": "string", "format": "date-time", "description": "ISO 8601 inclusive start of the reporting window." },
+    "period_end": { "type": "string", "format": "date-time", "description": "ISO 8601 exclusive end of the reporting window." },
+    "generated_at": { "type": "string", "format": "date-time", "description": "ISO 8601 generation timestamp." },
+    "delivery_targets": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Where the report is delivered (e.g. telegram:1370595013, email:ops@…)." }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cavi:forge.write.requested.v1",
+  "title": "Forge Write Requested",
+  "description": "Emitted by Forge when a mutating ERP operation is proposed and awaiting approval. Carries the intended payload and a human-readable diff preview.",
+  "type": "object",
+  "required": ["tenant_id", "erp_platform", "operation", "target_module", "payload", "requested_by", "requested_at", "diff_preview"],
+  "additionalProperties": false,
+  "properties": {
+    "tenant_id": { "type": "string", "minLength": 1, "description": "Owning tenant. Never empty." },
+    "erp_platform": { "type": "string", "minLength": 1, "description": "ERP the write targets." },
+    "operation": { "type": "string", "minLength": 1, "description": "Mutation verb (e.g. create, update, void)." },
+    "target_module": { "type": "string", "minLength": 1, "description": "ERP module/entity the write affects." },
+    "payload": { "type": "object", "additionalProperties": true, "description": "Free-form intended write body." },
+    "requested_by": { "type": "string", "minLength": 1, "description": "Actor (agent or user) proposing the write." },
+    "requested_at": { "type": "string", "format": "date-time", "description": "ISO 8601 proposal timestamp." },
+    "diff_preview": { "type": "string", "description": "Rendered before/after diff for reviewer sign-off." }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cavi:forge.write.rejected.v1",
+  "title": "Forge Write Rejected",
+  "description": "Emitted by Forge when a proposed write is refused during review and will not execute.",
+  "type": "object",
+  "required": ["tenant_id", "erp_platform", "operation", "rejected_by", "rejected_at", "reason"],
+  "additionalProperties": false,
+  "properties": {
+    "tenant_id": { "type": "string", "minLength": 1, "description": "Owning tenant. Never empty." },
+    "erp_platform": { "type": "string", "minLength": 1, "description": "ERP the write would have targeted." },
+    "operation": { "type": "string", "minLength": 1, "description": "Mutation verb being rejected." },
+    "rejected_by": { "type": "string", "minLength": 1, "description": "Reviewer who rejected the write." },
+    "rejected_at": { "type": "string", "format": "date-time", "description": "ISO 8601 rejection timestamp." },
+    "reason": { "type": "string", "minLength": 1, "description": "Human-readable rejection cause." }
+  }
+}
