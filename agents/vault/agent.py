@@ -9,11 +9,55 @@ leave this agent.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from agents.base import BaseAgent, Event
-from agents.vault.vault import CredentialNotFound, Vault, VaultError
+from agents.vault.vault import CredentialNotFound, Vault, VaultError, VendedToken
 
 log = logging.getLogger("cavi.vault")
+
+
+def _iso(epoch: float) -> str:
+    """Render an epoch-seconds instant as an ISO-8601 UTC string.
+
+    Vended tokens track time as float epoch seconds (see VendedToken); the
+    canonical vault.secret.* contracts require ISO-8601 timestamps, so the agent
+    converts at the emit boundary.
+    """
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
+def granted_payload(token: VendedToken) -> dict:
+    """Build the canonical ``vault.secret.granted.v1`` payload from a vended token.
+
+    Non-secret identifiers only — the raw NetSuite secrets live in the token's
+    signing closure and are never surfaced here. ``token_id`` is the (non-secret)
+    TBA token id already exposed on VendedToken.
+    """
+    return {
+        "tenant_id": token.tenant_id,
+        "erp_platform": token.erp_platform,
+        "token_id": token.token_id,
+        "scopes": list(token.scopes),
+        "expires_at": _iso(token.expires_at),
+        "issued_at": _iso(token.issued_at),
+    }
+
+
+def denied_payload(
+    tenant_id: str, erp_platform: str, reason: str, *, requested_at: str | None = None
+) -> dict:
+    """Build the canonical ``vault.secret.denied.v1`` payload.
+
+    The inbound request event carries no timestamp, so ``requested_at`` is stamped
+    at denial time unless the caller supplies one (kept injectable for tests).
+    """
+    return {
+        "tenant_id": tenant_id,
+        "erp_platform": erp_platform,
+        "reason": reason,
+        "requested_at": requested_at or datetime.now(timezone.utc).isoformat(),
+    }
 
 
 class VaultAgent(BaseAgent):
@@ -44,8 +88,7 @@ class VaultAgent(BaseAgent):
                     schema_version=1,
                     source=self.name,
                     correlation_id=event.correlation_id,
-                    payload={"tenant_id": tenant_id, "erp_platform": platform,
-                             "reason": str(exc)},
+                    payload=denied_payload(tenant_id, platform, str(exc)),
                 )
             )
             return
@@ -58,12 +101,7 @@ class VaultAgent(BaseAgent):
                 schema_version=1,
                 source=self.name,
                 correlation_id=event.correlation_id,
-                payload={
-                    "tenant_id": tenant_id,
-                    "erp_platform": platform,
-                    "scopes": list(token.scopes),
-                    "expires_at": token.expires_at,
-                },
+                payload=granted_payload(token),
             )
         )
 
