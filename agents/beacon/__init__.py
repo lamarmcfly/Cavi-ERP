@@ -9,6 +9,8 @@ from agents.beacon.beacon import (
     classify,
     severity_for,
 )
+from agents.beacon.report import ReportBuilder, summarize_kpis
+from agents.beacon.report_agent import BeaconReportAgent
 
 __all__ = [
     "BeaconAgent",
@@ -20,4 +22,8 @@ __all__ = [
     "LogChannel",
     "CollectingChannel",
     "HermesChannel",
+    # KPI reporting
+    "BeaconReportAgent",
+    "ReportBuilder",
+    "summarize_kpis",
 ]
