@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cavi:ledger.entry.v2",
+  "title": "Ledger Entry (v2)",
+  "description": "v2 of ledger.entry: `memo` is renamed to `description` and a required `entry_type` classifier is added. additionalProperties is false, so a v1->v2 coercion MUST drop the old `memo` key.",
+  "type": "object",
+  "required": ["entry_id", "currency", "entry_type", "lines"],
+  "additionalProperties": false,
+  "properties": {
+    "entry_id": { "type": "string", "format": "uuid" },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "entry_type": { "enum": ["sale", "refund", "adjustment"] },
+    "description": { "type": "string", "maxLength": 280 },
+    "lines": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["account", "direction", "amount_minor"],
+        "additionalProperties": false,
+        "properties": {
+          "account": { "type": "string" },
+          "direction": { "enum": ["debit", "credit"] },
+          "amount_minor": { "type": "integer", "minimum": 1 }
+        }
+      }
+    }
+  }
+}

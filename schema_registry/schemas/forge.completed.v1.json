@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cavi:forge.completed.v1",
+  "title": "Forge Work Order Completed",
+  "description": "Emitted when Forge finishes a work order. The financial consequence travels separately as a ledger.entry.",
+  "type": "object",
+  "required": ["work_order_id", "tenant_id", "sku", "quantity", "currency", "net_minor", "tax_minor", "gross_minor"],
+  "additionalProperties": false,
+  "properties": {
+    "work_order_id": { "type": "string", "minLength": 1 },
+    "tenant_id": { "type": "string", "minLength": 1 },
+    "sku": { "type": "string", "minLength": 1 },
+    "quantity": { "type": "integer", "minimum": 1 },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "net_minor": { "type": "integer", "minimum": 1 },
+    "tax_minor": { "type": "integer", "minimum": 0 },
+    "gross_minor": { "type": "integer", "minimum": 1 }
+  }
+}

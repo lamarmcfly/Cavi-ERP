@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cavi:deadletter.envelope.v1",
+  "title": "Dead-letter Envelope",
+  "description": "Wraps an event that failed validation in BaseAgent._dispatch(). Published to 'deadletter.<subject>' and watched by Beacon. The outer envelope is strict so consumers can rely on it; the inner 'payload' is intentionally free-form because it is the exact data that failed its own contract.",
+  "type": "object",
+  "required": ["id", "subject", "schema_version", "source", "payload", "error"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "format": "uuid", "description": "Original event id, preserved for replay." },
+    "subject": { "type": "string", "description": "Original subject the event failed on." },
+    "schema_version": { "type": "integer", "minimum": 1, "description": "Schema version the producer claimed." },
+    "source": { "type": "string", "description": "Agent that emitted the failed event." },
+    "correlation_id": {
+      "type": ["string", "null"],
+      "description": "Business-transaction id, kept so a quarantined event stays traceable end to end."
+    },
+    "payload": {
+      "type": "object",
+      "description": "The original, unmodified payload that failed validation. Free-form by design.",
+      "additionalProperties": true
+    },
+    "error": { "type": "string", "minLength": 1, "description": "Validation error message that caused the dead-letter." }
+  }
+}

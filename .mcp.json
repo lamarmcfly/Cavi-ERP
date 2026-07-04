@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "hermes": {
+      "command": "hermes",
+      "args": ["mcp", "serve"],
+      "env": {
+        "HERMES_PROFILE": "cavi-erp",
+        "TELEGRAM_BOT_TOKEN": "${TELEGRAM_BOT_TOKEN}"
+      }
+    }
+  }
+}

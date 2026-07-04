@@ -1,0 +1,73 @@
+# Local development stack for Cavi ERP.
+# Brings up the infrastructure dependencies (PostgreSQL, Redis, n8n) plus the
+# Vault HTTP service, so `docker compose up` gives a runnable system.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: cavi_erp
+      POSTGRES_USER: cavi
+      POSTGRES_PASSWORD: change-me
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./schema_registry/migrations:/docker-entrypoint-initdb.d:ro
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./cache/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+
+  # Vault HTTP service — the only component that holds raw ERP credentials.
+  # Uses an in-memory store seeded from env (no OS keyring in containers);
+  # secrets come from compose env and never touch disk.
+  vault:
+    build: .
+    command: ["python", "-m", "agents.vault.service"]
+    ports:
+      # Host 8080 is often taken (e.g. a local Apache); publish on 8088 instead.
+      # In-network consumers still reach Vault at http://vault:8080.
+      - "8088:8080"
+    environment:
+      CAVI_VAULT_HOST: 0.0.0.0
+      CAVI_VAULT_PORT: 8080
+      CAVI_VAULT_STORE: memory
+      CAVI_VAULT_SEED_TENANT: tenant-acme
+      # Provide real values via a .env file next to this compose file.
+      NETSUITE_ACCOUNT_ID: ${NETSUITE_ACCOUNT_ID:-1234567_SB1}
+      NETSUITE_CONSUMER_KEY: ${NETSUITE_CONSUMER_KEY:-demo-consumer-key}
+      NETSUITE_CONSUMER_SECRET: ${NETSUITE_CONSUMER_SECRET:-demo-consumer-secret}
+      NETSUITE_TOKEN_ID: ${NETSUITE_TOKEN_ID:-demo-token-id}
+      NETSUITE_TOKEN_SECRET: ${NETSUITE_TOKEN_SECRET:-demo-token-secret}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/healthz', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  n8n:
+    image: n8nio/n8n:latest
+    ports:
+      - "5678:5678"
+    environment:
+      N8N_PORT: 5678
+      GENERIC_TIMEZONE: UTC
+      # Reachable inside the compose network; netsuite-sync calls Vault's /sign.
+      VAULT_URL: http://vault:8080
+      NETSUITE_REST_URL: ${NETSUITE_REST_URL:-https://1234567-sb1.suitetalk.api.netsuite.com/services/rest}
+      HERMES_WEBHOOK_URL: ${HERMES_WEBHOOK_URL:-http://host.docker.internal:9000/notify}
+    volumes:
+      - n8ndata:/home/node/.n8n
+      - ./middleware/n8n/workflows:/workflows:ro
+    depends_on:
+      - postgres
+      - redis
+      - vault
+
+volumes:
+  pgdata:
+  n8ndata:

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cavi:ticker.price.v1",
+  "title": "Ticker Price Snapshot",
+  "description": "An FX rate snapshot served by Ticker. `rate` is a decimal string to preserve precision (1 base == rate quote). Optional converted amount when the request supplied amount_minor.",
+  "type": "object",
+  "required": ["base", "quote", "rate", "as_of"],
+  "additionalProperties": false,
+  "properties": {
+    "base": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "quote": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "rate": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$", "description": "Decimal as string." },
+    "as_of": { "type": "number", "description": "Epoch seconds the rate was sourced." },
+    "amount_minor": { "type": "integer", "minimum": 0 },
+    "converted_minor": { "type": "integer", "minimum": 0 }
+  }
+}

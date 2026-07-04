@@ -1,0 +1,55 @@
+{
+  "name": "cavi · sale-to-posting",
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "meta": {},
+  "pinData": {},
+  "tags": [],
+  "nodes": [
+    {
+      "parameters": {
+        "trigger": "messages",
+        "channels": "forge.completed",
+        "options": {}
+      },
+      "id": "trg-forge-completed",
+      "name": "On forge.completed",
+      "type": "n8n-nodes-base.redisTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "credentials": { "redis": { "id": "cavi-redis", "name": "Cavi Redis" } }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Revenue recognition: turn a completed work order (forge.completed)\n// into a balanced ledger.entry Event envelope. This is the orchestration\n// seam — keeping this mapping in n8n decouples Forge from accounting.\nconst evt = $json;\nconst e = evt.payload ?? evt;\n\nconst lines = [\n  { account: '1100-accounts-receivable', direction: 'debit',  amount_minor: e.gross_minor },\n  { account: '4000-revenue',             direction: 'credit', amount_minor: e.net_minor },\n];\nif ((e.tax_minor ?? 0) > 0) {\n  lines.push({ account: '2200-tax-payable', direction: 'credit', amount_minor: e.tax_minor });\n}\n\nreturn {\n  json: {\n    subject: 'ledger.entry',\n    schema_version: 1,\n    source: 'n8n:sale-to-posting',\n    correlation_id: evt.correlation_id ?? null,\n    payload: {\n      entry_id: e.entry_id,\n      currency: e.currency,\n      memo: `sale ${e.sku} x${e.quantity} (wo ${e.work_order_id})`,\n      lines,\n    },\n  },\n};"
+      },
+      "id": "fn-build-entry",
+      "name": "Build ledger.entry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "operation": "publish",
+        "channel": "ledger.entry",
+        "messageData": "={{ JSON.stringify($json) }}"
+      },
+      "id": "pub-ledger-entry",
+      "name": "Publish ledger.entry",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [800, 300],
+      "credentials": { "redis": { "id": "cavi-redis", "name": "Cavi Redis" } }
+    }
+  ],
+  "connections": {
+    "On forge.completed": {
+      "main": [[{ "node": "Build ledger.entry", "type": "main", "index": 0 }]]
+    },
+    "Build ledger.entry": {
+      "main": [[{ "node": "Publish ledger.entry", "type": "main", "index": 0 }]]
+    }
+  }
+}

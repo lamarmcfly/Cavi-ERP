@@ -1,0 +1,57 @@
+{
+  "name": "cavi · deadletter-escalation",
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "meta": {},
+  "pinData": {},
+  "tags": [],
+  "nodes": [
+    {
+      "parameters": {
+        "trigger": "messages",
+        "channels": "deadletter.ledger.entry",
+        "options": {}
+      },
+      "id": "trg-deadletter",
+      "name": "On deadletter.ledger.entry",
+      "type": "n8n-nodes-base.redisTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "credentials": { "redis": { "id": "cavi-redis", "name": "Cavi Redis" } }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// A financial event that could not be parsed is CRITICAL — escalate to a\n// human via the Hermes gateway. The dead-letter envelope carries the original\n// payload plus the validation error (see deadletter.envelope.v1).\nconst d = $json;\nconst p = d.payload ?? {};\nconst text = [\n  '\\uD83D\\uDEA8 CRITICAL: dead-lettered ledger.entry',\n  `entry_id: ${p.entry_id ?? 'unknown'}`,\n  `source: ${d.source ?? 'unknown'}`,\n  `error: ${d.error ?? 'n/a'}`,\n  `correlation: ${d.correlation_id ?? 'n/a'}`,\n].join('\\n');\nreturn { json: { target: 'telegram:default', text } };"
+      },
+      "id": "fn-format-alert",
+      "name": "Format alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HERMES_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ target: $json.target, message: $json.text }) }}",
+        "options": {}
+      },
+      "id": "http-hermes",
+      "name": "Notify via Hermes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [800, 300]
+    }
+  ],
+  "connections": {
+    "On deadletter.ledger.entry": {
+      "main": [[{ "node": "Format alert", "type": "main", "index": 0 }]]
+    },
+    "Format alert": {
+      "main": [[{ "node": "Notify via Hermes", "type": "main", "index": 0 }]]
+    }
+  }
+}

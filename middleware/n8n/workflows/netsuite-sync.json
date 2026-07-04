@@ -1,0 +1,67 @@
+{
+  "name": "cavi · netsuite-sync",
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "meta": {},
+  "pinData": {},
+  "tags": [],
+  "nodes": [
+    {
+      "parameters": {
+        "trigger": "messages",
+        "channels": "ledger.posted",
+        "options": {}
+      },
+      "id": "trg-ledger-posted",
+      "name": "On ledger.posted",
+      "type": "n8n-nodes-base.redisTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "credentials": { "redis": { "id": "cavi-redis", "name": "Cavi Redis" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.VAULT_URL }}/sign",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ tenant_id: ($json.payload && $json.payload.tenant_id) || 'tenant-acme', erp_platform: 'netsuite', method: 'POST', url: $env.NETSUITE_REST_URL + '/record/v1/journalEntry' }) }}",
+        "options": {}
+      },
+      "id": "http-vault-sign",
+      "name": "Sign NetSuite request (Vault)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.NETSUITE_REST_URL }}/record/v1/journalEntry",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ $json.authorization_header }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('On ledger.posted').item.json.payload) }}",
+        "options": {}
+      },
+      "id": "http-netsuite",
+      "name": "POST to NetSuite",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [800, 300]
+    }
+  ],
+  "connections": {
+    "On ledger.posted": {
+      "main": [[{ "node": "Sign NetSuite request (Vault)", "type": "main", "index": 0 }]]
+    },
+    "Sign NetSuite request (Vault)": {
+      "main": [[{ "node": "POST to NetSuite", "type": "main", "index": 0 }]]
+    }
+  }
+}
