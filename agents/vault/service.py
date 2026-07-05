@@ -31,6 +31,8 @@ from agents.vault.vault import (
     Vault,
     VaultError,
 )
+from shared.auth import verify_shared_secret
+from shared.settings import get_settings
 
 log = logging.getLogger("cavi.vault.service")
 
@@ -90,7 +92,24 @@ class VaultService:
         return 200, {"authorization_header": header, "expires_at": token.expires_at}
 
 
-def make_handler(service: VaultService) -> type[BaseHTTPRequestHandler]:
+#: header a caller presents to authenticate to the Vault service.
+AUTH_HEADER = "X-Cavi-Vault-Secret"
+
+
+def make_handler(
+    service: VaultService,
+    *,
+    api_secret: str,
+    tenant_allowlist: frozenset[str] = frozenset(),
+) -> type[BaseHTTPRequestHandler]:
+    """Build the HTTP handler.
+
+    Credential endpoints (`/vend`, `/sign`) are gated by a shared secret and,
+    optionally, a tenant allowlist. Auth **fails closed**: if ``api_secret`` is
+    empty the service refuses to sign (503) rather than serving credentials
+    unauthenticated. `/healthz` stays open for liveness probes.
+    """
+
     class VaultHandler(BaseHTTPRequestHandler):
         server_version = "CaviVault/1.0"
 
@@ -102,6 +121,18 @@ def make_handler(service: VaultService) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(data)
 
+        def _authorized(self) -> bool:
+            """Enforce the shared secret. Returns False (and sends the response)
+            when unconfigured or the header is missing/invalid."""
+            if not api_secret:
+                # Fail closed: never serve credentials without configured auth.
+                self._send(503, {"error": "vault authentication not configured"})
+                return False
+            if not verify_shared_secret(self.headers.get(AUTH_HEADER), api_secret):
+                self._send(401, {"error": "unauthorized"})
+                return False
+            return True
+
         def do_GET(self) -> None:
             if self.path == "/healthz":
                 self._send(200, {"status": "ok"})
@@ -109,6 +140,11 @@ def make_handler(service: VaultService) -> type[BaseHTTPRequestHandler]:
                 self._send(404, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if self.path not in ("/vend", "/sign"):
+                self._send(404, {"error": "not found"})
+                return
+            if not self._authorized():
+                return
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b"{}"
             try:
@@ -116,12 +152,14 @@ def make_handler(service: VaultService) -> type[BaseHTTPRequestHandler]:
             except json.JSONDecodeError:
                 self._send(400, {"error": "invalid JSON body"})
                 return
+            # Default-deny tenant scoping when an allowlist is configured.
+            if tenant_allowlist and body.get("tenant_id") not in tenant_allowlist:
+                self._send(403, {"error": "tenant not permitted"})
+                return
             if self.path == "/vend":
                 status, payload = service.vend(body)
-            elif self.path == "/sign":
+            else:  # "/sign"
                 status, payload = service.sign(body)
-            else:
-                status, payload = 404, {"error": "not found"}
             self._send(status, payload)
 
         def log_message(self, *args) -> None:  # keep stdout clean; we log ourselves
@@ -133,7 +171,18 @@ def make_handler(service: VaultService) -> type[BaseHTTPRequestHandler]:
 def serve(service: VaultService, host: str | None = None, port: int | None = None) -> None:
     host = host or os.environ.get("CAVI_VAULT_HOST", "0.0.0.0")
     port = port or int(os.environ.get("CAVI_VAULT_PORT", "8080"))
-    httpd = ThreadingHTTPServer((host, port), make_handler(service))
+    settings = get_settings()
+    if not settings.vault_api_secret:
+        log.warning(
+            "CAVI_VAULT_API_SECRET is not set — the Vault service will refuse "
+            "all /vend and /sign requests (fail closed) until it is configured."
+        )
+    handler = make_handler(
+        service,
+        api_secret=settings.vault_api_secret,
+        tenant_allowlist=settings.vault_tenant_allowset,
+    )
+    httpd = ThreadingHTTPServer((host, port), handler)
     log.info("Vault service listening on %s:%d", host, port)
     httpd.serve_forever()
 

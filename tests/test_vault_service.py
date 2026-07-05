@@ -4,8 +4,10 @@ Most tests exercise the pure handlers (no socket). One end-to-end test starts a
 real stdlib server on an ephemeral port to prove the HTTP wrapper works. All use
 an in-memory credential store, so no OS keyring is touched.
 """
+import contextlib
 import json
 import threading
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
@@ -77,41 +79,86 @@ def test_sign_missing_fields_is_400(service: VaultService):
     assert status == 400
 
 
-def test_http_roundtrip_sign(service: VaultService):
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(service))
-    port = httpd.server_address[1]
+TEST_SECRET = "test-vault-secret"
+
+SIGN_BODY = {
+    "tenant_id": "tenant-acme",
+    "erp_platform": "netsuite",
+    "method": "POST",
+    "url": "https://example.suitetalk.api.netsuite.com/record/v1/journalEntry",
+}
+
+
+@contextlib.contextmanager
+def _running(handler_cls):
+    """Run a handler on an ephemeral port; yields the base URL."""
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
-        payload = json.dumps({
-            "tenant_id": "tenant-acme",
-            "erp_platform": "netsuite",
-            "method": "POST",
-            "url": "https://example.suitetalk.api.netsuite.com/record/v1/journalEntry",
-        }).encode()
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/sign",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        yield f"http://127.0.0.1:{httpd.server_address[1]}"
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=5)
+
+
+def _post(url, body, headers=None):
+    """POST JSON; return (status, parsed-body), tolerating 4xx/5xx."""
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode(), method="POST",
+        headers={"Content-Type": "application/json", **(headers or {})},
+    )
+    try:
         with urllib.request.urlopen(req, timeout=5) as resp:
-            assert resp.status == 200
-            body = json.loads(resp.read())
-        assert body["authorization_header"].startswith("OAuth ")
-    finally:
-        httpd.shutdown()
-        thread.join(timeout=5)
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read() or b"{}")
 
 
-def test_http_healthz(service: VaultService):
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(service))
-    port = httpd.server_address[1]
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-    thread.start()
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=5) as resp:
+def test_http_sign_with_valid_secret(service: VaultService):
+    handler = make_handler(service, api_secret=TEST_SECRET)
+    with _running(handler) as base:
+        status, body = _post(f"{base}/sign", SIGN_BODY, {"X-Cavi-Vault-Secret": TEST_SECRET})
+    assert status == 200
+    assert body["authorization_header"].startswith("OAuth ")
+
+
+def test_http_sign_without_secret_is_401(service: VaultService):
+    handler = make_handler(service, api_secret=TEST_SECRET)
+    with _running(handler) as base:
+        status, body = _post(f"{base}/sign", SIGN_BODY)  # no auth header
+    assert status == 401
+    assert body["error"] == "unauthorized"
+
+
+def test_http_sign_with_wrong_secret_is_401(service: VaultService):
+    handler = make_handler(service, api_secret=TEST_SECRET)
+    with _running(handler) as base:
+        status, _ = _post(f"{base}/sign", SIGN_BODY, {"X-Cavi-Vault-Secret": "nope"})
+    assert status == 401
+
+
+def test_http_unconfigured_secret_fails_closed_503(service: VaultService):
+    handler = make_handler(service, api_secret="")  # auth not configured
+    with _running(handler) as base:
+        status, body = _post(f"{base}/sign", SIGN_BODY, {"X-Cavi-Vault-Secret": "anything"})
+    assert status == 503
+    assert "not configured" in body["error"]
+
+
+def test_http_tenant_allowlist_denies_403(service: VaultService):
+    handler = make_handler(
+        service, api_secret=TEST_SECRET, tenant_allowlist=frozenset({"other-tenant"})
+    )
+    with _running(handler) as base:
+        status, body = _post(f"{base}/sign", SIGN_BODY, {"X-Cavi-Vault-Secret": TEST_SECRET})
+    assert status == 403
+    assert body["error"] == "tenant not permitted"
+
+
+def test_http_healthz_is_open(service: VaultService):
+    # Liveness must not require auth even when the service is secured.
+    handler = make_handler(service, api_secret=TEST_SECRET)
+    with _running(handler) as base:
+        with urllib.request.urlopen(f"{base}/healthz", timeout=5) as resp:
             assert json.loads(resp.read())["status"] == "ok"
-    finally:
-        httpd.shutdown()
-        thread.join(timeout=5)
