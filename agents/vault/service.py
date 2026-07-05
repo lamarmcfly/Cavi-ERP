@@ -44,7 +44,8 @@ class VaultService:
     def vend(self, body: dict) -> tuple[int, dict[str, Any]]:
         tenant_id = body.get("tenant_id")
         erp_platform = body.get("erp_platform")
-        if not tenant_id or not erp_platform:
+        if not (isinstance(tenant_id, str) and tenant_id
+                and isinstance(erp_platform, str) and erp_platform):
             return 400, {"error": "tenant_id and erp_platform are required"}
         try:
             token = self._vault.vend_token(tenant_id, erp_platform)
@@ -72,7 +73,10 @@ class VaultService:
         method = body.get("method")
         url = body.get("url")
         params = body.get("params")  # optional query params dict
-        if not all([tenant_id, erp_platform, method, url]):
+        if not (isinstance(tenant_id, str) and tenant_id
+                and isinstance(erp_platform, str) and erp_platform
+                and isinstance(method, str) and method
+                and isinstance(url, str) and url):
             return 400, {"error": "tenant_id, erp_platform, method, url are required"}
         try:
             token = self._vault.vend_token(tenant_id, erp_platform)

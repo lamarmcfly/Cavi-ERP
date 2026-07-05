@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Callable, Iterable, Mapping
+from typing import Callable, Iterable
 
 from agents.beacon.beacon import Severity, severity_for
 
