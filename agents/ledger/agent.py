@@ -85,5 +85,6 @@ class LedgerAgent(BaseAgent):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    LedgerAgent().run()
+    from agents.base.runtime import run_agent
+
+    run_agent(LedgerAgent())

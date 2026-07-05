@@ -67,5 +67,6 @@ class TickerAgent(BaseAgent):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    TickerAgent().run()
+    from agents.base.runtime import run_agent
+
+    run_agent(TickerAgent())

@@ -8,6 +8,7 @@ Uses fakeredis for the bus and an in-memory event store — no infrastructure.
 from __future__ import annotations
 
 import json
+import logging
 
 import fakeredis
 
@@ -135,6 +136,27 @@ class _FakeBus:
 
     def publish(self, channel, data):
         self.published.append((channel, data))
+
+
+def test_run_agent_configures_logging_then_runs():
+    from agents.base import runtime
+
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    good = Event(subject="vault.secret.denied", schema_version=1, source="test",
+                 payload=VALID_DENIED)
+    agent = _RecordingAgent(
+        bus=_FakeBus([{"type": "message", "data": json.dumps(good.to_dict())}]),
+        event_store=InMemoryEventStore(),
+        registry=SchemaRegistry(),
+    )
+    try:
+        # health_port defaults to 0 -> no server started; logging is configured
+        # and the (finite) run loop processes the message.
+        runtime.run_agent(agent)
+        assert len(agent.handled) == 1
+    finally:
+        root.handlers[:], root.level = saved_handlers, saved_level
 
 
 def test_emit_and_deadletter_increment_metrics():

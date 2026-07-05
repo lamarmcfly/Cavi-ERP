@@ -1,0 +1,8 @@
+# Cavi ERP — DEV/TEST tooling (the lint/type/test gates; see pyproject.toml +
+# .github/workflows/ci.yml). Not shipped in the runtime image.
+-r requirements.txt
+
+pytest>=8.0,<9
+ruff>=0.4,<1
+mypy>=1.8,<2
+fakeredis>=2.20,<3   # in-memory Redis for agent-runtime tests

@@ -107,5 +107,6 @@ class BeaconAgent(BaseAgent):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    BeaconAgent().run()
+    from agents.base.runtime import run_agent
+
+    run_agent(BeaconAgent())
