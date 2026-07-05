@@ -114,7 +114,19 @@ pytest
 
 ## Status
 
-Scaffold. Agent runtimes, the event contract, the schema registry client, infra
-configs, and contract tests are in place. Business logic in each agent's
-`handle()` — and the inbound-event **dispatch policy** in
-`agents/base/agent.py` — are intentionally left as the next implementation step.
+**Enterprise hardening in progress — not yet live** (no production tenant).
+
+**Shipped:** all six agents emit their canonical contracts; a CI gate
+(ruff / mypy / pytest); fail-closed Vault credential auth; a durable
+`event_log` / `event_deadletter` audit trail (durable-first emit); idempotent,
+pooled, **tenant-isolated** ledger writes; fleet-wide durable Beacon dedup;
+structured JSON logs + metrics + `/healthz` `/readyz` `/metrics`; a tracked
+migration runner (`scripts.migrate`); and a multi-stage **non-root** image with
+compose (`--profile agents`) + example k8s manifests.
+
+**Open:** at-least-once *processing* (Redis Streams — see
+[docs/adr/0003](docs/adr/0003-bus-durability.md)); real ERP adapters (injectable
++ stubbed today); a hashed dependency lockfile.
+
+Full documentation: **[docs/](docs/README.md)** — architecture, security,
+operations runbook, incident response, disaster recovery, and ADRs.
