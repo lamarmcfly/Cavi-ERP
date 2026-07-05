@@ -20,7 +20,7 @@ def _balanced_entry() -> JournalEntry:
             {"account": "1000-cash", "direction": "debit", "amount_minor": 2500},
             {"account": "4000-revenue", "direction": "credit", "amount_minor": 2500},
         ],
-    })
+    }, tenant_id="tenant-acme")
 
 
 def test_concurrent_double_post_has_exactly_one_winner():
@@ -47,4 +47,4 @@ def test_concurrent_double_post_has_exactly_one_winner():
 
     assert results.count("posted") == 1        # exactly one write won
     assert results.count("duplicate") == n - 1  # the rest deduped, none crashed
-    assert store.get(entry.entry_id) is not None
+    assert store.get(entry.tenant_id, entry.entry_id) is not None

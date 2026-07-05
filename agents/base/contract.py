@@ -23,6 +23,10 @@ class Event:
     # correlation_id ties together every event in one business transaction so
     # a single sale can be traced across Forge -> Ledger -> Beacon.
     correlation_id: str | None = None
+    # tenant_id scopes every event to its owning tenant. Envelope metadata (like
+    # correlation_id), not payload — so the audit log and the books are
+    # tenant-isolated regardless of which contract the payload follows.
+    tenant_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -31,6 +35,7 @@ class Event:
             "schema_version": self.schema_version,
             "source": self.source,
             "correlation_id": self.correlation_id,
+            "tenant_id": self.tenant_id,
             "payload": self.payload,
         }
 
@@ -42,5 +47,6 @@ class Event:
             schema_version=data["schema_version"],
             source=data["source"],
             correlation_id=data.get("correlation_id"),
+            tenant_id=data.get("tenant_id"),
             payload=data["payload"],
         )

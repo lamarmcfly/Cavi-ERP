@@ -316,6 +316,7 @@ FIXTURES: dict[str, dict] = {
             "schema_version": 1,
             "source": "forge",
             "correlation_id": None,
+            "tenant_id": "tenant-acme",
             "payload": {"entry_id": "e1", "not": "valid against its own contract"},
             "error": "payload violated ledger.entry.v1",
         },
@@ -326,6 +327,7 @@ FIXTURES: dict[str, dict] = {
             "schema_version": 1,
             "source": "forge",
             "correlation_id": None,
+            "tenant_id": "tenant-acme",
             "payload": {"entry_id": "e1"},
         },
     },
@@ -373,9 +375,10 @@ def test_schema_meta_structure(subject: str):
         f"{subject}: required {sorted(required)} != properties {sorted(properties)}"
     )
 
-    # tenant_id, where present, is a non-empty string.
+    # tenant_id, where present, is a non-empty string — except on the dead-letter
+    # envelope, where it is envelope metadata and nullable (like correlation_id).
     tenant = properties.get("tenant_id")
-    if tenant is not None:
+    if tenant is not None and subject != "deadletter.envelope":
         assert tenant.get("type") == "string" and tenant.get("minLength") == 1, (
             f"{subject}: tenant_id must be a non-empty string"
         )

@@ -50,6 +50,7 @@ class JournalLine:
 @dataclass(frozen=True)
 class JournalEntry:
     entry_id: str
+    tenant_id: str  # owning tenant — the books are tenant-isolated (see migration 0003)
     currency: str
     lines: tuple[JournalLine, ...]
     memo: str | None = None
@@ -67,8 +68,13 @@ class JournalEntry:
         return self.total_debits == self.total_credits and self.total_debits > 0
 
     @classmethod
-    def from_payload(cls, payload: Mapping) -> "JournalEntry":
-        """Build from a `ledger.entry` event payload (already schema-validated)."""
+    def from_payload(cls, payload: Mapping, *, tenant_id: str) -> "JournalEntry":
+        """Build from a `ledger.entry` payload (schema-validated) + the envelope's
+        tenant_id. tenant_id is envelope metadata, not payload, so it is passed in
+        explicitly; a missing/empty tenant_id is a producer bug and is rejected
+        rather than silently commingling a tenant's books."""
+        if not tenant_id:
+            raise LedgerError("ledger entry requires a non-empty tenant_id")
         lines = tuple(
             JournalLine(
                 account=line["account"],
@@ -79,6 +85,7 @@ class JournalEntry:
         )
         return cls(
             entry_id=payload["entry_id"],
+            tenant_id=tenant_id,
             currency=payload["currency"],
             lines=lines,
             memo=payload.get("memo"),
@@ -98,7 +105,7 @@ class PostResult:
 # Persistence backends
 # --------------------------------------------------------------------------- #
 class LedgerStore(Protocol):
-    def get(self, entry_id: str) -> JournalEntry | None: ...
+    def get(self, tenant_id: str, entry_id: str) -> JournalEntry | None: ...
     def insert_if_absent(self, entry: JournalEntry) -> bool: ...
 
 
@@ -111,8 +118,12 @@ class InMemoryLedgerStore:
         self._entries: dict[str, JournalEntry] = {}
         self._lock = threading.Lock()
 
-    def get(self, entry_id: str) -> JournalEntry | None:
-        return self._entries.get(entry_id)
+    def get(self, tenant_id: str, entry_id: str) -> JournalEntry | None:
+        """Tenant-scoped: an entry is only visible to its owning tenant."""
+        entry = self._entries.get(entry_id)
+        if entry is None or entry.tenant_id != tenant_id:
+            return None
+        return entry
 
     def insert_if_absent(self, entry: JournalEntry) -> bool:
         """Insert atomically; return True if inserted, False if already present."""
@@ -128,26 +139,29 @@ class PostgresLedgerStore:
     (see schema_registry/migrations/0002_ledger.sql). Imports the db helper
     lazily so the domain logic is testable without psycopg installed."""
 
-    def get(self, entry_id: str) -> JournalEntry | None:
+    def get(self, tenant_id: str, entry_id: str) -> JournalEntry | None:
         from shared.db import connection
 
         with connection() as conn:
             head = conn.execute(
-                "SELECT currency, memo FROM journal_entry WHERE entry_id = %s",
-                (entry_id,),
+                "SELECT currency, memo FROM journal_entry "
+                "WHERE tenant_id = %s AND entry_id = %s",
+                (tenant_id, entry_id),
             ).fetchone()
             if head is None:
                 return None
             rows = conn.execute(
                 "SELECT account, direction, amount_minor FROM journal_line "
-                "WHERE entry_id = %s ORDER BY id",
-                (entry_id,),
+                "WHERE tenant_id = %s AND entry_id = %s ORDER BY id",
+                (tenant_id, entry_id),
             ).fetchall()
         lines = tuple(
             JournalLine(account=a, direction=Direction(d), amount_minor=int(m))
             for (a, d, m) in rows
         )
-        return JournalEntry(entry_id=entry_id, currency=head[0], lines=lines, memo=head[1])
+        return JournalEntry(
+            entry_id=entry_id, tenant_id=tenant_id, currency=head[0], lines=lines, memo=head[1]
+        )
 
     def insert_if_absent(self, entry: JournalEntry) -> bool:
         """Insert the entry + its lines in one transaction, atomically deduped.
@@ -161,17 +175,19 @@ class PostgresLedgerStore:
 
         with connection() as conn:  # single transaction (commit on success)
             cur = conn.execute(
-                "INSERT INTO journal_entry (entry_id, currency, memo, total_minor) "
-                "VALUES (%s, %s, %s, %s) ON CONFLICT (entry_id) DO NOTHING",
-                (entry.entry_id, entry.currency, entry.memo, entry.total_debits),
+                "INSERT INTO journal_entry (entry_id, tenant_id, currency, memo, total_minor) "
+                "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (entry_id) DO NOTHING",
+                (entry.entry_id, entry.tenant_id, entry.currency, entry.memo, entry.total_debits),
             )
             if cur.rowcount == 0:
                 return False  # already posted — idempotent no-op
             for line in entry.lines:
                 conn.execute(
-                    "INSERT INTO journal_line (entry_id, account, direction, amount_minor) "
-                    "VALUES (%s, %s, %s, %s)",
-                    (entry.entry_id, line.account, line.direction.value, line.amount_minor),
+                    "INSERT INTO journal_line "
+                    "(entry_id, tenant_id, account, direction, amount_minor) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (entry.entry_id, entry.tenant_id, line.account,
+                     line.direction.value, line.amount_minor),
                 )
             return True
 

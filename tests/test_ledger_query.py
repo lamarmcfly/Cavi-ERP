@@ -28,19 +28,19 @@ INVOICE_ROWS = [
 
 
 class StubErpReader:
-    """Returns canned rows and records the (subject, filters) it was asked for."""
+    """Returns canned rows and records the (tenant_id, subject, filters) asked for."""
 
     def __init__(self, rows: list[dict] | None = None) -> None:
         self.rows = INVOICE_ROWS if rows is None else rows
         self.calls: list = []
 
-    def read(self, subject, filters):
-        self.calls.append((subject, filters))
+    def read(self, tenant_id, subject, filters):
+        self.calls.append((tenant_id, subject, filters))
         return list(self.rows)
 
 
 class ExplodingErpReader:
-    def read(self, subject, filters):
+    def read(self, tenant_id, subject, filters):
         raise TimeoutError("upstream ERP timed out")
 
 
@@ -72,8 +72,8 @@ def test_query_completed_matches_contract(registry: SchemaRegistry):
     assert payload["filters"] == {"status": "open"}
     assert payload["schema_version"] == DEFAULT_SCHEMA_VERSION
     assert payload["queried_at"] == FIXED_TS
-    # The reader was asked for exactly this resource + filters.
-    assert reader.calls == [("invoices", {"status": "open"})]
+    # The reader was asked for exactly this tenant's resource + filters.
+    assert reader.calls == [("tenant-acme", "invoices", {"status": "open"})]
 
 
 def test_empty_result_is_a_valid_completed_query(registry: SchemaRegistry):

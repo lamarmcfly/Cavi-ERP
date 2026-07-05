@@ -31,7 +31,14 @@ class LedgerAgent(BaseAgent):
         return ["ledger.entry"]
 
     def handle(self, event: Event) -> None:
-        entry = JournalEntry.from_payload(event.payload)
+        tenant_id = event.tenant_id
+        if not tenant_id:
+            # Defensive: producers must set the envelope tenant_id. Never post to
+            # an unknown tenant's books; the journal columns are NOT NULL too.
+            log.error("ledger dropped entry without tenant_id: %s",
+                      event.payload.get("entry_id"))
+            return
+        entry = JournalEntry.from_payload(event.payload, tenant_id=tenant_id)
         try:
             result = self.ledger.post(entry)
         except UnbalancedEntry as exc:
@@ -42,6 +49,7 @@ class LedgerAgent(BaseAgent):
                     schema_version=1,
                     source=self.name,
                     correlation_id=event.correlation_id,
+                    tenant_id=tenant_id,
                     payload={
                         "entry_id": entry.entry_id,
                         "currency": entry.currency,
@@ -65,6 +73,7 @@ class LedgerAgent(BaseAgent):
                 schema_version=1,
                 source=self.name,
                 correlation_id=event.correlation_id,
+                tenant_id=tenant_id,
                 payload={
                     "entry_id": result.entry_id,
                     "currency": result.currency,
