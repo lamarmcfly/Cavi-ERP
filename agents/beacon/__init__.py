@@ -3,8 +3,11 @@ from agents.beacon.beacon import (
     Alert,
     Beacon,
     CollectingChannel,
+    DedupStore,
     HermesChannel,
+    InMemoryDedupStore,
     LogChannel,
+    RedisDedupStore,
     Severity,
     classify,
     severity_for,
@@ -22,6 +25,10 @@ __all__ = [
     "LogChannel",
     "CollectingChannel",
     "HermesChannel",
+    # dedup stores
+    "DedupStore",
+    "InMemoryDedupStore",
+    "RedisDedupStore",
     # KPI reporting
     "BeaconReportAgent",
     "ReportBuilder",

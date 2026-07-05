@@ -21,6 +21,7 @@ from agents.beacon.beacon import (
     HermesChannel,
     LogChannel,
     NotificationChannel,
+    RedisDedupStore,
 )
 from shared.settings import get_settings
 
@@ -78,7 +79,8 @@ def _default_beacon() -> Beacon:
             build_hermes_sender(settings.hermes_webhook_url),
         ),
     }
-    return Beacon(channels)
+    # Durable, fleet-wide dedup so a restart/replica doesn't re-page humans.
+    return Beacon(channels, dedup=RedisDedupStore())
 
 
 class BeaconAgent(BaseAgent):
