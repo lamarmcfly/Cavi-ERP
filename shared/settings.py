@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     # --- Schema registry ---
     schema_registry_dir: str = "schema_registry/schemas"
 
+    # --- Observability ---
+    # Health/metrics HTTP server bind. Port 0 = disabled (an agent starts it only
+    # when a port is set). See shared/health.py.
+    health_host: str = "0.0.0.0"
+    health_port: int = 0
+    # Root log level for the JSON logger (see shared/logging.py).
+    log_level: str = "INFO"
+
     # --- Security ---
     # Shared secret required on the Vault HTTP service (/vend, /sign). Empty =
     # the service refuses to sign (fail closed). Set per environment.
