@@ -1,0 +1,119 @@
+# Cavi ERP — example Kubernetes manifests (starting point, not a full chart).
+# Apply: kubectl apply -f deploy/k8s/cavi-erp.example.yaml
+# Replace the Secret values, set `image:` to your registry, and add the other
+# agents by copying the ledger Deployment and changing the command.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cavi-erp
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cavi-erp-config
+  namespace: cavi-erp
+data:
+  CAVI_POSTGRES_HOST: "postgres"
+  CAVI_POSTGRES_PORT: "5432"
+  CAVI_POSTGRES_DB: "cavi_erp"
+  CAVI_POSTGRES_USER: "cavi"
+  CAVI_REDIS_HOST: "redis"
+  CAVI_REDIS_PORT: "6379"
+  CAVI_HEALTH_HOST: "0.0.0.0"
+  CAVI_HEALTH_PORT: "8080"
+  CAVI_LOG_LEVEL: "INFO"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cavi-erp-secrets
+  namespace: cavi-erp
+type: Opaque
+stringData:
+  # REPLACE these — never commit real secrets.
+  CAVI_POSTGRES_PASSWORD: "change-me"
+  CAVI_VAULT_API_SECRET: "change-me-strong-secret"
+---
+# One-shot migration + schema-registry load, run as a Job before the agents.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cavi-erp-migrate
+  namespace: cavi-erp
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: cavi-erp:latest
+          command: ["sh", "-c", "python -m scripts.migrate && python -m scripts.bootstrap"]
+          envFrom:
+            - configMapRef: { name: cavi-erp-config }
+            - secretRef: { name: cavi-erp-secrets }
+---
+# Vault credential service (has its own HTTP surface on 8080).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault
+  namespace: cavi-erp
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: vault } }
+  template:
+    metadata: { labels: { app: vault } }
+    spec:
+      securityContext: { runAsNonRoot: true }
+      containers:
+        - name: vault
+          image: cavi-erp:latest
+          command: ["python", "-m", "agents.vault.service"]
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: cavi-erp-config }
+            - secretRef: { name: cavi-erp-secrets }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: cavi-erp
+spec:
+  selector: { app: vault }
+  ports: [{ port: 8080, targetPort: 8080 }]
+---
+# A bus agent (copy this block per agent — ledger/forge/ticker/mapper/beacon —
+# changing metadata.name + the command). Health surface comes from run_agent.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger
+  namespace: cavi-erp
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: ledger } }
+  template:
+    metadata: { labels: { app: ledger } }
+    spec:
+      securityContext: { runAsNonRoot: true }
+      containers:
+        - name: ledger
+          image: cavi-erp:latest
+          command: ["python", "-m", "agents.ledger.agent"]
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: cavi-erp-config }
+            - secretRef: { name: cavi-erp-secrets }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8080 }

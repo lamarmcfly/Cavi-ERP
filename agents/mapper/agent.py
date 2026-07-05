@@ -57,5 +57,6 @@ class MapperAgent(BaseAgent):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    MapperAgent().run()
+    from agents.base.runtime import run_agent
+
+    run_agent(MapperAgent())

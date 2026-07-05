@@ -1,18 +1,59 @@
-# Local development stack for Cavi ERP.
-# Brings up the infrastructure dependencies (PostgreSQL, Redis, n8n) plus the
-# Vault HTTP service, so `docker compose up` gives a runnable system.
+# Local/dev stack for Cavi ERP.
+#   docker compose up -d                 # infra + Vault + migrations
+#   docker compose --profile agents up -d # + the six bus agents
+# Migrations run via the tracked runner (scripts.migrate), not initdb, so an
+# existing volume upgrades cleanly. PRODUCTION must override the *_PASSWORD and
+# *_SECRET values below.
+
+x-db-env: &db-env
+  CAVI_POSTGRES_HOST: postgres
+  CAVI_POSTGRES_PORT: "5432"
+  CAVI_POSTGRES_DB: cavi_erp
+  CAVI_POSTGRES_USER: cavi
+  CAVI_POSTGRES_PASSWORD: ${CAVI_POSTGRES_PASSWORD:-change-me}
+
+x-bus-env: &bus-env
+  CAVI_REDIS_HOST: redis
+  CAVI_REDIS_PORT: "6379"
+
+# Shared config for the six bus agents (build once, differ only by command).
+x-agent: &agent
+  build: .
+  restart: unless-stopped
+  environment: &agent-env
+    <<: [*db-env, *bus-env]
+    CAVI_HEALTH_HOST: 0.0.0.0
+    CAVI_HEALTH_PORT: "8080"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_started
+    migrate:
+      condition: service_completed_successfully
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/healthz', timeout=3).status==200 else 1)"]
+    interval: 15s
+    timeout: 5s
+    retries: 5
+  profiles: ["agents"]
+
 services:
   postgres:
     image: postgres:16
     environment:
       POSTGRES_DB: cavi_erp
       POSTGRES_USER: cavi
-      POSTGRES_PASSWORD: change-me
+      POSTGRES_PASSWORD: ${CAVI_POSTGRES_PASSWORD:-change-me}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./schema_registry/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cavi -d cavi_erp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7
@@ -22,26 +63,32 @@ services:
     volumes:
       - ./cache/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
 
+  # One-shot: create the schema (tracked) + load the schema registry, then exit.
+  migrate:
+    build: .
+    command: ["sh", "-c", "python -m scripts.migrate && python -m scripts.bootstrap"]
+    environment:
+      <<: *db-env
+      CAVI_SCHEMA_REGISTRY_DIR: schema_registry/schemas
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   # Vault HTTP service — the only component that holds raw ERP credentials.
-  # Uses an in-memory store seeded from env (no OS keyring in containers);
-  # secrets come from compose env and never touch disk.
   vault:
     build: .
     command: ["python", "-m", "agents.vault.service"]
     ports:
-      # Host 8080 is often taken (e.g. a local Apache); publish on 8088 instead.
-      # In-network consumers still reach Vault at http://vault:8080.
+      # Host 8080 is often taken; publish on 8088. In-network: http://vault:8080.
       - "8088:8080"
     environment:
       CAVI_VAULT_HOST: 0.0.0.0
-      CAVI_VAULT_PORT: 8080
+      CAVI_VAULT_PORT: "8080"
       CAVI_VAULT_STORE: memory
       CAVI_VAULT_SEED_TENANT: tenant-acme
-      # Shared secret gating /vend and /sign. Empty = service refuses to sign
-      # (fail closed). The dev default lets `docker compose up` work locally;
-      # PRODUCTION MUST override with a strong secret.
+      # Fail-closed shared secret. Dev default for local up; PRODUCTION overrides.
       CAVI_VAULT_API_SECRET: ${CAVI_VAULT_API_SECRET:-dev-vault-secret}
-      # Provide real values via a .env file next to this compose file.
       NETSUITE_ACCOUNT_ID: ${NETSUITE_ACCOUNT_ID:-1234567_SB1}
       NETSUITE_CONSUMER_KEY: ${NETSUITE_CONSUMER_KEY:-demo-consumer-key}
       NETSUITE_CONSUMER_SECRET: ${NETSUITE_CONSUMER_SECRET:-demo-consumer-secret}
@@ -53,6 +100,27 @@ services:
       timeout: 5s
       retries: 5
 
+  # --- the six bus agents (profile: agents) ---
+  ledger:
+    <<: *agent
+    command: ["python", "-m", "agents.ledger.agent"]
+  forge:
+    <<: *agent
+    command: ["python", "-m", "agents.forge.agent"]
+  ticker:
+    <<: *agent
+    command: ["python", "-m", "agents.ticker.agent"]
+  mapper:
+    <<: *agent
+    command: ["python", "-m", "agents.mapper.agent"]
+  beacon:
+    <<: *agent
+    command: ["python", "-m", "agents.beacon.agent"]
+    environment:
+      <<: *agent-env
+      CAVI_HERMES_WEBHOOK_URL: ${CAVI_HERMES_WEBHOOK_URL:-}
+      CAVI_BEACON_TARGET: ${CAVI_BEACON_TARGET:-telegram:1370595013}
+
   n8n:
     image: n8nio/n8n:latest
     ports:
@@ -60,9 +128,7 @@ services:
     environment:
       N8N_PORT: 5678
       GENERIC_TIMEZONE: UTC
-      # Reachable inside the compose network; netsuite-sync calls Vault's /sign.
       VAULT_URL: http://vault:8080
-      # Must match the vault service's secret so netsuite-sync can call /sign.
       CAVI_VAULT_API_SECRET: ${CAVI_VAULT_API_SECRET:-dev-vault-secret}
       NETSUITE_REST_URL: ${NETSUITE_REST_URL:-https://1234567-sb1.suitetalk.api.netsuite.com/services/rest}
       HERMES_WEBHOOK_URL: ${HERMES_WEBHOOK_URL:-http://host.docker.internal:9000/notify}
