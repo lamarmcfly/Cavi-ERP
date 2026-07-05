@@ -33,9 +33,12 @@ consumers ◀── run() loop ── _dispatch ── [validate] ──┬─�
 - **Durable event log** — `BaseAgent.emit()` writes to `event_log` **before**
   publishing to Redis (Redis pub/sub is fire-and-forget). Dead-letters are
   written to `event_deadletter`. This is the audit trail and the replay source.
-- **The bus** — Redis pub/sub today (at-most-once delivery; the durable log
-  mitigates loss). Migrating to Redis Streams + consumer groups for true
-  at-least-once processing is a planned change (see [adr/0003](adr/0003-bus-durability.md)).
+- **The bus** — Redis Streams + consumer groups (at-least-once *processing*:
+  `XADD` on emit, `XREADGROUP` per agent group, `XACK` only after `handle()`
+  succeeds, with reclaim-based retry and a poison dead-letter cap; see
+  [adr/0003](adr/0003-bus-durability.md)). `emit()` also `publish()`es to pub/sub
+  so n8n's `redisTrigger` workflows (which can't read consumer groups) keep
+  their fan-out.
 - **Envelope** — every `Event` carries `id`, `subject`, `schema_version`,
   `source`, `correlation_id`, and **`tenant_id`** (tenant isolation is envelope
   metadata, not per-payload).
