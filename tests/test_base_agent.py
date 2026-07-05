@@ -110,3 +110,45 @@ def test_dispatch_routes_a_valid_event_to_handle():
     agent._dispatch(good)
     assert agent.handled == [good]
     assert agent.event_store.deadletters == []
+
+
+class _FakePubSub:
+    def __init__(self, messages):
+        self._messages = messages
+        self.subscribed: list = []
+
+    def subscribe(self, *subjects):
+        self.subscribed.extend(subjects)
+
+    def listen(self):
+        # Finite iterator so run()'s `for message in ...` loop terminates.
+        return iter(self._messages)
+
+
+class _FakeBus:
+    def __init__(self, messages):
+        self._pubsub = _FakePubSub(messages)
+        self.published: list = []
+
+    def pubsub(self):
+        return self._pubsub
+
+    def publish(self, channel, data):
+        self.published.append((channel, data))
+
+
+def test_run_subscribes_and_dispatches_bus_messages():
+    good = Event(subject="vault.secret.denied", schema_version=1, source="test",
+                 payload=VALID_DENIED)
+    messages = [
+        {"type": "subscribe", "data": 1},                         # non-message: skipped
+        {"type": "message", "data": json.dumps(good.to_dict())},   # dispatched
+    ]
+    agent = _RecordingAgent(
+        bus=_FakeBus(messages), event_store=InMemoryEventStore(), registry=SchemaRegistry()
+    )
+    agent.run()  # returns once the finite message stream is exhausted
+
+    assert agent.bus.pubsub().subscribed == ["vault.secret.denied"]
+    assert len(agent.handled) == 1
+    assert agent.handled[0].subject == "vault.secret.denied"

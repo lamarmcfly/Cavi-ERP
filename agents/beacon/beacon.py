@@ -138,6 +138,61 @@ DEFAULT_ROUTES: dict[Severity, tuple[str, ...]] = {
 
 
 # --------------------------------------------------------------------------- #
+# Dedup store (the "have I paged about this already?" state)
+# --------------------------------------------------------------------------- #
+class DedupStore(Protocol):
+    def is_duplicate(self, key: str, window_seconds: int) -> bool: ...
+
+
+class InMemoryDedupStore:
+    """Process-local dedup. Fine for a single process and tests, but the state is
+    lost on restart and not shared across replicas — so a restarting/scaled-out
+    Beacon would re-page humans. `RedisDedupStore` fixes that in production."""
+
+    def __init__(self, *, clock: Callable[[], float] = time.time) -> None:
+        self._clock = clock
+        self._last_sent: dict[str, float] = {}
+
+    def is_duplicate(self, key: str, window_seconds: int) -> bool:
+        now = self._clock()
+        last = self._last_sent.get(key)
+        if last is not None and now - last < window_seconds:
+            return True
+        self._last_sent[key] = now
+        return False
+
+
+class RedisDedupStore:
+    """Durable, fleet-wide dedup via Redis ``SET key NX EX``.
+
+    The key survives restarts and is shared across Beacon replicas, so an alert
+    storm is suppressed exactly once fleet-wide instead of once per process. The
+    client is imported lazily so importing this module needs no redis.
+    """
+
+    def __init__(self, client=None, *, namespace: str = "beacon:dedup") -> None:
+        self._client = client
+        self._namespace = namespace
+
+    def _conn(self):
+        if self._client is None:
+            from shared.cache import get_client
+
+            self._client = get_client()
+        return self._client
+
+    def is_duplicate(self, key: str, window_seconds: int) -> bool:
+        # SET NX EX is atomic: it sets the key only if absent, with a TTL equal to
+        # the dedup window. A successful set (truthy) => first sighting in the
+        # window => NOT a duplicate. A failed set (falsy) => key already present
+        # => duplicate.
+        was_set = self._conn().set(
+            f"{self._namespace}:{key}", "1", nx=True, ex=window_seconds
+        )
+        return not was_set
+
+
+# --------------------------------------------------------------------------- #
 # Beacon
 # --------------------------------------------------------------------------- #
 class Beacon:
@@ -148,12 +203,14 @@ class Beacon:
         routes: Mapping[Severity, tuple[str, ...]] = DEFAULT_ROUTES,
         dedup_window_seconds: int = DEFAULT_DEDUP_WINDOW_SECONDS,
         clock: Callable[[], float] = time.time,
+        dedup: DedupStore | None = None,
     ) -> None:
         self._channels = dict(channels)
         self._routes = dict(routes)
         self._dedup_window = dedup_window_seconds
-        self._clock = clock
-        self._last_sent: dict[str, float] = {}
+        # Injectable so production can use a durable, fleet-wide RedisDedupStore;
+        # defaults to process-local (with the injected clock) for tests/local.
+        self._dedup: DedupStore = dedup if dedup is not None else InMemoryDedupStore(clock=clock)
 
     def notify(
         self, subject: str, payload: Mapping, correlation_id: str | None = None
@@ -167,12 +224,7 @@ class Beacon:
         return alert
 
     def _is_duplicate(self, alert: Alert) -> bool:
-        now = self._clock()
-        last = self._last_sent.get(alert.dedup_key)
-        if last is not None and now - last < self._dedup_window:
-            return True
-        self._last_sent[alert.dedup_key] = now
-        return False
+        return self._dedup.is_duplicate(alert.dedup_key, self._dedup_window)
 
     def _dispatch(self, alert: Alert) -> None:
         for name in self._routes.get(alert.severity, ()):
