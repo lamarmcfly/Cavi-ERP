@@ -28,3 +28,8 @@ warn_unused_ignores = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Put the repo root on sys.path so `import agents` / `import shared` resolve
+# under the bare `pytest` console script (CI), not only under `python -m pytest`
+# (which adds the CWD implicitly). Without this, CI collection fails with
+# ModuleNotFoundError: No module named 'agents'.
+pythonpath = ["."]
