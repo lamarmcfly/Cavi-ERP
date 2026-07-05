@@ -5,6 +5,12 @@ Agents publish `Event` envelopes onto Redis pub/sub; n8n workflows subscribe,
 apply routing/branching/retry logic, and trigger downstream agents or external
 systems (email, webhooks, third-party ERPs).
 
+> **Note.** Agent-to-agent delivery moved to Redis Streams + consumer groups for
+> at-least-once processing (see `docs/adr/0003-bus-durability.md`), but `emit()`
+> still `publish()`es to the same pub/sub channel because n8n's `redisTrigger`
+> node reads pub/sub, not consumer groups. These workflows are unaffected. If
+> n8n later consumes Streams directly, the dual publish can be dropped.
+
 ## Why a middleware instead of direct agent-to-agent calls?
 
 * **Decoupling** — an agent only needs to know the *subject* it emits, not who

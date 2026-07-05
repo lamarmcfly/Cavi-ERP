@@ -120,13 +120,16 @@ pytest
 (ruff / mypy / pytest); fail-closed Vault credential auth; a durable
 `event_log` / `event_deadletter` audit trail (durable-first emit); idempotent,
 pooled, **tenant-isolated** ledger writes; fleet-wide durable Beacon dedup;
-structured JSON logs + metrics + `/healthz` `/readyz` `/metrics`; a tracked
-migration runner (`scripts.migrate`); and a multi-stage **non-root** image with
-compose (`--profile agents`) + example k8s manifests.
+**at-least-once processing** on the bus (Redis Streams + consumer groups —
+`XACK` only after `handle()`, reclaim-based retry, poison dead-letter cap; see
+[docs/adr/0003](docs/adr/0003-bus-durability.md)); structured JSON logs + metrics
++ `/healthz` `/readyz` `/metrics`; a tracked migration runner (`scripts.migrate`);
+and a multi-stage **non-root** image with compose (`--profile agents`) + example
+k8s manifests.
 
-**Open:** at-least-once *processing* (Redis Streams — see
-[docs/adr/0003](docs/adr/0003-bus-durability.md)); real ERP adapters (injectable
-+ stubbed today); a hashed dependency lockfile.
+**Open:** real ERP adapters (injectable + stubbed today); a hashed dependency
+lockfile; migrating n8n's `redisTrigger` workflows off pub/sub so `emit()` can
+drop its dual `publish()`.
 
 Full documentation: **[docs/](docs/README.md)** — architecture, security,
 operations runbook, incident response, disaster recovery, and ADRs.

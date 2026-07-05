@@ -17,6 +17,10 @@ from collections import defaultdict
 EVENTS_EMITTED = "cavi_events_emitted_total"
 EVENTS_DISPATCHED = "cavi_events_dispatched_total"
 DEADLETTERS = "cavi_deadletters_total"
+# Redis Streams delivery (see agents/base/agent.py + ADR 0003).
+EVENTS_ACKED = "cavi_events_acked_total"        # handle() succeeded -> XACK
+EVENTS_RETRIED = "cavi_events_retried_total"    # handle() failed -> left pending for redelivery
+EVENTS_POISONED = "cavi_events_poisoned_total"  # failed stream_max_deliveries times -> dead-lettered
 
 _LabelKey = tuple[tuple[str, str], ...]
 

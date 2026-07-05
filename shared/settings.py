@@ -27,10 +27,29 @@ class Settings(BaseSettings):
     postgres_pool_min_size: int = 1
     postgres_pool_max_size: int = 10
 
-    # --- Redis (cache + lightweight event bus) ---
+    # --- Redis (cache + event bus) ---
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
+    # Bus delivery tuning (Redis Streams consumer groups — see
+    # docs/adr/0003-bus-durability.md). BaseAgent consumes with XREADGROUP and
+    # only XACKs after handle() succeeds, so a crashed consumer's in-flight
+    # message is redelivered instead of lost (at-least-once processing).
+    # How long XREADGROUP blocks waiting for new messages, in ms.
+    stream_block_ms: int = 5000
+    # Max messages pulled per XREADGROUP / reclaim pass (COUNT).
+    stream_batch_size: int = 10
+    # A message whose handle() has failed this many times is treated as poison:
+    # dead-lettered and acked so it can't wedge the group behind it.
+    stream_max_deliveries: int = 5
+    # Only reclaim a pending message once it has been idle (unacked) this long,
+    # in ms — the retry backoff, and the guard against stealing a message a live
+    # sibling is still working.
+    stream_reclaim_idle_ms: int = 30000
+    # Approximate cap on entries kept per stream (XADD MAXLEN ~). The durable
+    # replay source is event_log, not the stream, so the stream only needs enough
+    # history to cover redelivery/reclaim.
+    stream_maxlen: int = 10000
 
     # --- n8n middleware ---
     n8n_base_url: str = "http://localhost:5678"

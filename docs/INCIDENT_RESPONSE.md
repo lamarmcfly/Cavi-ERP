@@ -34,8 +34,10 @@ is acknowledged as processed without its `event_log` row.
 
 ## Redis down
 The bus stops flowing and Beacon dedup can't record — agents can't publish/
-consume. Restore Redis; because events are in `event_log`, nothing is lost, but
-in-flight delivery pauses. (Redis Streams — planned — will add redelivery.)
+consume. Restore Redis; because events are in `event_log`, nothing is lost, and
+because the bus uses Redis Streams + consumer groups, in-flight messages left
+unacked when Redis went down are redelivered on recovery (an event is acked only
+after `handle()` succeeds) rather than dropped.
 
 ## Escalation
 Financial-impacting incidents (dead-lettered `ledger.*`, Vault compromise

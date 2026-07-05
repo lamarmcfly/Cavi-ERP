@@ -113,46 +113,33 @@ def test_dispatch_routes_a_valid_event_to_handle():
     assert agent.event_store.deadletters == []
 
 
-class _FakePubSub:
-    def __init__(self, messages):
-        self._messages = messages
-        self.subscribed: list = []
-
-    def subscribe(self, *subjects):
-        self.subscribed.extend(subjects)
-
-    def listen(self):
-        # Finite iterator so run()'s `for message in ...` loop terminates.
-        return iter(self._messages)
-
-
-class _FakeBus:
-    def __init__(self, messages):
-        self._pubsub = _FakePubSub(messages)
-        self.published: list = []
-
-    def pubsub(self):
-        return self._pubsub
-
-    def publish(self, channel, data):
-        self.published.append((channel, data))
-
-
 def test_run_agent_configures_logging_then_runs():
     from agents.base import runtime
 
     root = logging.getLogger()
     saved_handlers, saved_level = root.handlers[:], root.level
-    good = Event(subject="vault.secret.denied", schema_version=1, source="test",
-                 payload=VALID_DENIED)
-    agent = _RecordingAgent(
-        bus=_FakeBus([{"type": "message", "data": json.dumps(good.to_dict())}]),
+    # An agent that stops itself after the first event, so run()'s loop returns.
+    class _OneShot(_RecordingAgent):
+        def handle(self, event: Event) -> None:
+            super().handle(event)
+            self.stop()
+
+    agent = _OneShot(
+        bus=fakeredis.FakeStrictRedis(decode_responses=True),
         event_store=InMemoryEventStore(),
         registry=SchemaRegistry(),
     )
+    agent._block_ms = 50
+    # Create the consumer group before emitting: the group starts at the stream
+    # tail (id="$"), so a message XADDed before it exists would never be seen.
+    # run() calls _ensure_groups() again (idempotent) before consuming.
+    agent._ensure_groups()
+    good = Event(subject="vault.secret.denied", schema_version=1, source="test",
+                 payload=VALID_DENIED)
+    agent.emit(good)  # XADD onto the stream the agent will consume
     try:
         # health_port defaults to 0 -> no server started; logging is configured
-        # and the (finite) run loop processes the message.
+        # and the run loop processes the one message, then stops.
         runtime.run_agent(agent)
         assert len(agent.handled) == 1
     finally:
@@ -172,20 +159,3 @@ def test_emit_and_deadletter_increment_metrics():
 
     assert metrics.REGISTRY.value(metrics.EVENTS_EMITTED, agent="test", subject=subj) == emitted_before + 1
     assert metrics.REGISTRY.value(metrics.DEADLETTERS, agent="test", subject=subj) == dl_before + 1
-
-
-def test_run_subscribes_and_dispatches_bus_messages():
-    good = Event(subject="vault.secret.denied", schema_version=1, source="test",
-                 payload=VALID_DENIED)
-    messages = [
-        {"type": "subscribe", "data": 1},                         # non-message: skipped
-        {"type": "message", "data": json.dumps(good.to_dict())},   # dispatched
-    ]
-    agent = _RecordingAgent(
-        bus=_FakeBus(messages), event_store=InMemoryEventStore(), registry=SchemaRegistry()
-    )
-    agent.run()  # returns once the finite message stream is exhausted
-
-    assert agent.bus.pubsub().subscribed == ["vault.secret.denied"]
-    assert len(agent.handled) == 1
-    assert agent.handled[0].subject == "vault.secret.denied"

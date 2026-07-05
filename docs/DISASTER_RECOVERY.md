@@ -34,5 +34,8 @@ losing it costs in-flight delivery and dedup windows, not durable data.
 
 ## Not yet covered (follow-ups)
 Automated backup verification, cross-region replication, and a rehearsed
-game-day runbook. Redis Streams (planned) would also make in-flight messages
-recoverable rather than lost on a Redis outage.
+game-day runbook. In-flight messages are now recoverable: the bus uses Redis
+Streams + consumer groups, so a consumer that dies mid-`handle()` leaves its
+message pending and a restarted agent (or a sibling replica) redelivers it — an
+event is only acked once processed. Streams persist across a Redis restart, so
+in-flight work survives an outage rather than being lost.
