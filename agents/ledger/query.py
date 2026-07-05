@@ -35,7 +35,7 @@ class ErpReader(Protocol):
     implementation signs with a Vault-vended token and calls the ERP REST API.
     """
 
-    def read(self, subject: str, filters: Mapping) -> Sequence[dict]: ...
+    def read(self, tenant_id: str, subject: str, filters: Mapping) -> Sequence[dict]: ...
 
 
 class UnconfiguredErpReader:
@@ -43,7 +43,7 @@ class UnconfiguredErpReader:
     misconfigured deployment fails loudly (as a query failure) instead of
     silently returning nothing."""
 
-    def read(self, subject: str, filters: Mapping) -> Sequence[dict]:
+    def read(self, tenant_id: str, subject: str, filters: Mapping) -> Sequence[dict]:
         raise LedgerQueryError("no ERP reader configured; inject an ErpReader")
 
 
@@ -116,7 +116,7 @@ class LedgerQuerier:
         payload. Raises `LedgerQueryError` (with a human reason) on any read
         failure, including a misconfigured reader."""
         try:
-            rows = self._reader.read(subject, dict(filters))
+            rows = self._reader.read(tenant_id, subject, dict(filters))
         except LedgerQueryError:
             raise
         except Exception as exc:  # any upstream read error is a query failure

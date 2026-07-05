@@ -73,10 +73,12 @@ def test_ledger_entry_id_is_deterministic(forge: Forge):
 def test_forge_entry_posts_to_ledger_end_to_end(forge: Forge):
     # The whole point: Forge's output is valid input for Ledger.
     result = forge.complete(_order())
-    entry = JournalEntry.from_payload(result.ledger_entry)
+    tenant_id = result.order.tenant_id  # tenant flows on the event envelope
+    entry = JournalEntry.from_payload(result.ledger_entry, tenant_id=tenant_id)
     ledger = Ledger(store=InMemoryLedgerStore())
 
     first = ledger.post(entry)
     assert first.status == "posted"
     # Replaying the same completion is idempotent across the two agents.
-    assert ledger.post(JournalEntry.from_payload(result.ledger_entry)).status == "duplicate"
+    replay = JournalEntry.from_payload(result.ledger_entry, tenant_id=tenant_id)
+    assert ledger.post(replay).status == "duplicate"

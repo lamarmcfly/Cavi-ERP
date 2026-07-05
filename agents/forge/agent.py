@@ -44,13 +44,16 @@ class ForgeAgent(BaseAgent):
             "forge completed %s (%s gross=%d)",
             result.order.work_order_id, result.order.currency, result.order.gross_minor,
         )
-        # Emit the domain fact and the financial consequence.
+        # Emit the domain fact and the financial consequence, both scoped to the
+        # work order's tenant so the audit log and the books stay tenant-isolated.
+        tenant_id = result.order.tenant_id
         self.emit(
             Event(
                 subject="forge.completed",
                 schema_version=1,
                 source=self.name,
                 correlation_id=event.correlation_id,
+                tenant_id=tenant_id,
                 payload=result.completed_event,
             )
         )
@@ -60,6 +63,7 @@ class ForgeAgent(BaseAgent):
                 schema_version=1,
                 source=self.name,
                 correlation_id=event.correlation_id,
+                tenant_id=tenant_id,
                 payload=result.ledger_entry,
             )
         )

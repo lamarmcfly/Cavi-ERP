@@ -14,7 +14,8 @@ from agents.ledger.ledger import (
 )
 
 
-def _entry(entry_id="00000000-0000-0000-0000-000000000001", lines=None, currency="USD"):
+def _entry(entry_id="00000000-0000-0000-0000-000000000001", lines=None, currency="USD",
+           tenant_id="tenant-acme"):
     """A balanced 2-line entry by default; override `lines` to break balance."""
     payload = {
         "entry_id": entry_id,
@@ -25,7 +26,7 @@ def _entry(entry_id="00000000-0000-0000-0000-000000000001", lines=None, currency
             {"account": "4000-revenue", "direction": "credit", "amount_minor": 2500},
         ],
     }
-    return JournalEntry.from_payload(payload)
+    return JournalEntry.from_payload(payload, tenant_id=tenant_id)
 
 
 @pytest.fixture

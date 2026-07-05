@@ -72,14 +72,15 @@ class PostgresEventStore:
         with connection() as conn:
             conn.execute(
                 "INSERT INTO event_log "
-                "(id, subject, schema_version, source, correlation_id, payload) "
-                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+                "(id, subject, schema_version, source, correlation_id, tenant_id, payload) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
                 (
                     _as_uuid(event.id),
                     event.subject,
                     event.schema_version,
                     event.source,
                     _as_uuid(event.correlation_id),
+                    event.tenant_id,
                     Json(event.payload),
                 ),
             )

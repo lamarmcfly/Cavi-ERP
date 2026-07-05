@@ -4,7 +4,7 @@
   "title": "Dead-letter Envelope",
   "description": "Wraps an event that failed validation in BaseAgent._dispatch(). Published to 'deadletter.<subject>' and watched by Beacon. The outer envelope is strict so consumers can rely on it; the inner 'payload' is intentionally free-form because it is the exact data that failed its own contract.",
   "type": "object",
-  "required": ["id", "subject", "schema_version", "source", "correlation_id", "payload", "error"],
+  "required": ["id", "subject", "schema_version", "source", "correlation_id", "tenant_id", "payload", "error"],
   "additionalProperties": false,
   "properties": {
     "id": { "type": "string", "format": "uuid", "description": "Original event id, preserved for replay." },
@@ -14,6 +14,10 @@
     "correlation_id": {
       "type": ["string", "null"],
       "description": "Business-transaction id, kept so a quarantined event stays traceable end to end. Always present (may be null) — Event.to_dict() emits it unconditionally, so it is required to honor the 'no optional root fields' house rule."
+    },
+    "tenant_id": {
+      "type": ["string", "null"],
+      "description": "Owning tenant of the quarantined event (envelope metadata). Always present (may be null) — Event.to_dict() emits it unconditionally."
     },
     "payload": {
       "type": "object",
