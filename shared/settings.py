@@ -35,6 +35,17 @@ class Settings(BaseSettings):
     # --- Schema registry ---
     schema_registry_dir: str = "schema_registry/schemas"
 
+    # --- Security ---
+    # Shared secret required on the Vault HTTP service (/vend, /sign). Empty =
+    # the service refuses to sign (fail closed). Set per environment.
+    vault_api_secret: str = ""
+    # Optional comma-separated tenant allowlist for the Vault service. Empty =
+    # any tenant with stored credentials (default-allow); set = default-deny to
+    # the named tenants only (mirrors the inventory adapter's allowlist gate).
+    vault_tenant_allowlist: str = ""
+    # HMAC signing secret shared with n8n for inbound webhook verification.
+    webhook_signing_secret: str = ""
+
     # --- Hermes bridge (Beacon alert delivery) ---
     # The gateway's POST /notify endpoint. Empty string = no real delivery, so
     # Beacon degrades to log-only (safe default for local/dev + tests).
@@ -46,6 +57,11 @@ class Settings(BaseSettings):
     )
     # Where Beacon sends human alerts through Hermes. Owner's Telegram chat.
     beacon_target: str = "telegram:1370595013"
+
+    @property
+    def vault_tenant_allowset(self) -> frozenset[str]:
+        """Parsed allowlist; empty set means default-allow."""
+        return frozenset(t.strip() for t in self.vault_tenant_allowlist.split(",") if t.strip())
 
     @property
     def postgres_dsn(self) -> str:

@@ -37,6 +37,10 @@ services:
       CAVI_VAULT_PORT: 8080
       CAVI_VAULT_STORE: memory
       CAVI_VAULT_SEED_TENANT: tenant-acme
+      # Shared secret gating /vend and /sign. Empty = service refuses to sign
+      # (fail closed). The dev default lets `docker compose up` work locally;
+      # PRODUCTION MUST override with a strong secret.
+      CAVI_VAULT_API_SECRET: ${CAVI_VAULT_API_SECRET:-dev-vault-secret}
       # Provide real values via a .env file next to this compose file.
       NETSUITE_ACCOUNT_ID: ${NETSUITE_ACCOUNT_ID:-1234567_SB1}
       NETSUITE_CONSUMER_KEY: ${NETSUITE_CONSUMER_KEY:-demo-consumer-key}
@@ -58,6 +62,8 @@ services:
       GENERIC_TIMEZONE: UTC
       # Reachable inside the compose network; netsuite-sync calls Vault's /sign.
       VAULT_URL: http://vault:8080
+      # Must match the vault service's secret so netsuite-sync can call /sign.
+      CAVI_VAULT_API_SECRET: ${CAVI_VAULT_API_SECRET:-dev-vault-secret}
       NETSUITE_REST_URL: ${NETSUITE_REST_URL:-https://1234567-sb1.suitetalk.api.netsuite.com/services/rest}
       HERMES_WEBHOOK_URL: ${HERMES_WEBHOOK_URL:-http://host.docker.internal:9000/notify}
     volumes:
