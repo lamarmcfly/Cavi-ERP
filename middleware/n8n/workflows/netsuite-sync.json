@@ -23,6 +23,12 @@
       "parameters": {
         "method": "POST",
         "url": "={{ $env.VAULT_URL }}/sign",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Cavi-Vault-Secret", "value": "={{ $env.CAVI_VAULT_API_SECRET }}" }
+          ]
+        },
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ tenant_id: ($json.payload && $json.payload.tenant_id) || 'tenant-acme', erp_platform: 'netsuite', method: 'POST', url: $env.NETSUITE_REST_URL + '/record/v1/journalEntry' }) }}",
