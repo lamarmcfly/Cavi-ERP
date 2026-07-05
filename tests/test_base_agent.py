@@ -137,6 +137,21 @@ class _FakeBus:
         self.published.append((channel, data))
 
 
+def test_emit_and_deadletter_increment_metrics():
+    from shared import metrics
+
+    agent = _agent()
+    subj = "vault.secret.denied"
+    emitted_before = metrics.REGISTRY.value(metrics.EVENTS_EMITTED, agent="test", subject=subj)
+    dl_before = metrics.REGISTRY.value(metrics.DEADLETTERS, agent="test", subject=subj)
+
+    agent.emit(Event(subject=subj, schema_version=1, source="test", payload=VALID_DENIED))
+    agent._dispatch(Event(subject=subj, schema_version=1, source="test", payload={"bad": 1}))
+
+    assert metrics.REGISTRY.value(metrics.EVENTS_EMITTED, agent="test", subject=subj) == emitted_before + 1
+    assert metrics.REGISTRY.value(metrics.DEADLETTERS, agent="test", subject=subj) == dl_before + 1
+
+
 def test_run_subscribes_and_dispatches_bus_messages():
     good = Event(subject="vault.secret.denied", schema_version=1, source="test",
                  payload=VALID_DENIED)

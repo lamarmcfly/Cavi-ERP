@@ -20,6 +20,7 @@ from jsonschema import ValidationError
 
 from agents.base.contract import Event
 from agents.base.registry import SchemaNotFound, SchemaRegistry
+from shared import metrics
 from shared.cache import get_client
 
 log = logging.getLogger("cavi.agent")
@@ -62,7 +63,14 @@ class BaseAgent(abc.ABC):
         self.registry.validate(event.subject, event.schema_version, event.payload)
         self.event_store.record_event(event)
         self.bus.publish(event.subject, json.dumps(event.to_dict()))
-        log.info("%s emitted %s (%s)", self.name, event.subject, event.id)
+        metrics.REGISTRY.inc(metrics.EVENTS_EMITTED, agent=self.name, subject=event.subject)
+        log.info(
+            "%s emitted %s (%s)", self.name, event.subject, event.id,
+            extra={
+                "agent": self.name, "subject": event.subject, "event_id": event.id,
+                "correlation_id": event.correlation_id, "tenant_id": event.tenant_id,
+            },
+        )
 
     def run(self) -> None:
         """Subscribe to declared subjects and process events forever."""
@@ -107,6 +115,7 @@ class BaseAgent(abc.ABC):
         except (SchemaNotFound, ValidationError) as exc:
             self._dead_letter(event, str(exc))
             return
+        metrics.REGISTRY.inc(metrics.EVENTS_DISPATCHED, agent=self.name, subject=event.subject)
         self.handle(event)
 
     def _dead_letter(self, event: Event, error: str) -> None:
@@ -124,4 +133,12 @@ class BaseAgent(abc.ABC):
             log.error("%s dead-letter envelope invalid for %s: %s", self.name, event.id, exc)
         self.event_store.record_deadletter(envelope)
         self.bus.publish(f"deadletter.{event.subject}", json.dumps(envelope))
-        log.warning("%s dead-lettered %s: %s", self.name, event.id, error)
+        metrics.REGISTRY.inc(metrics.DEADLETTERS, agent=self.name, subject=event.subject)
+        log.warning(
+            "%s dead-lettered %s: %s", self.name, event.id, error,
+            extra={
+                "agent": self.name, "subject": event.subject, "event_id": event.id,
+                "correlation_id": event.correlation_id, "tenant_id": event.tenant_id,
+                "error": error,
+            },
+        )
