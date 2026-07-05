@@ -29,9 +29,16 @@ class BaseAgent(abc.ABC):
     #: name of the agent, e.g. "ledger" — set by each subclass
     name: str = "base"
 
-    def __init__(self) -> None:
-        self.bus = get_client()
-        self.registry = SchemaRegistry()
+    def __init__(self, *, bus=None, registry=None, event_store=None) -> None:
+        # All deps injectable so the runtime is testable without redis/psycopg;
+        # production defaults connect lazily.
+        self.bus = bus if bus is not None else get_client()
+        self.registry = registry or SchemaRegistry()
+        if event_store is None:
+            from shared.events import PostgresEventStore
+
+            event_store = PostgresEventStore()
+        self.event_store = event_store
 
     # --- contract each concrete agent fills in -------------------------------
     @property
@@ -45,8 +52,15 @@ class BaseAgent(abc.ABC):
 
     # --- runtime -------------------------------------------------------------
     def emit(self, event: Event) -> None:
-        """Validate then publish an event onto the bus."""
+        """Validate, durably record, then publish an event onto the bus.
+
+        Durable-first: the event is written to the append-only ``event_log``
+        *before* it is published. Redis pub/sub is fire-and-forget, so without
+        the log an event with no connected subscriber would be lost; recording
+        first guarantees an audit record and a replay source survive.
+        """
         self.registry.validate(event.subject, event.schema_version, event.payload)
+        self.event_store.record_event(event)
         self.bus.publish(event.subject, json.dumps(event.to_dict()))
         log.info("%s emitted %s (%s)", self.name, event.subject, event.id)
 
@@ -108,5 +122,6 @@ class BaseAgent(abc.ABC):
             self.registry.validate("deadletter.envelope", 1, envelope)
         except (SchemaNotFound, ValidationError) as exc:
             log.error("%s dead-letter envelope invalid for %s: %s", self.name, event.id, exc)
+        self.event_store.record_deadletter(envelope)
         self.bus.publish(f"deadletter.{event.subject}", json.dumps(envelope))
         log.warning("%s dead-lettered %s: %s", self.name, event.id, error)

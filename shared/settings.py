@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     postgres_db: str = "cavi_erp"
     postgres_user: str = "cavi"
     postgres_password: str = "change-me"
+    # Connection-pool bounds (see shared/db.py).
+    postgres_pool_min_size: int = 1
+    postgres_pool_max_size: int = 10
 
     # --- Redis (cache + lightweight event bus) ---
     redis_host: str = "localhost"
