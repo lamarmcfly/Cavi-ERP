@@ -38,8 +38,8 @@ def forge() -> Forge:
 def test_completion_produces_a_balanced_ledger_entry(forge: Forge):
     result = forge.complete(_order())
     lines = result.ledger_entry["lines"]
-    debits = sum(l["amount_minor"] for l in lines if l["direction"] == "debit")
-    credits = sum(l["amount_minor"] for l in lines if l["direction"] == "credit")
+    debits = sum(ln["amount_minor"] for ln in lines if ln["direction"] == "debit")
+    credits = sum(ln["amount_minor"] for ln in lines if ln["direction"] == "credit")
     assert debits == credits          # balanced by construction
     assert debits == 3 * 1000 + 247   # gross = net 3000 + tax floor(3000*825/10000)=247
 

@@ -55,11 +55,11 @@ class JournalEntry:
 
     @property
     def total_debits(self) -> int:
-        return sum(l.amount_minor for l in self.lines if l.direction is Direction.DEBIT)
+        return sum(ln.amount_minor for ln in self.lines if ln.direction is Direction.DEBIT)
 
     @property
     def total_credits(self) -> int:
-        return sum(l.amount_minor for l in self.lines if l.direction is Direction.CREDIT)
+        return sum(ln.amount_minor for ln in self.lines if ln.direction is Direction.CREDIT)
 
     def is_balanced(self) -> bool:
         """A valid double-entry posting: debits == credits, and money moved."""

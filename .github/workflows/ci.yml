@@ -1,0 +1,40 @@
+name: verify
+
+# The pre-merge gate for Cavi ERP: lint, type-check, and test on every push to
+# main and every pull request. Mirrors the local commands developers run
+# (ruff / mypy / pytest), so CI failures are reproducible with `pip install
+# -r requirements.txt` + the same three commands.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Type-check (mypy)
+        run: mypy
+
+      - name: Test (pytest)
+        run: pytest -q
