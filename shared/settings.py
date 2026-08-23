@@ -57,6 +57,19 @@ class Settings(BaseSettings):
     # HMAC signing secret shared with n8n for inbound webhook verification.
     webhook_signing_secret: str = ""
 
+    # --- ERP write-back (Forge write agent -> Vault -> NetSuite) ---
+    # Both accept the CAVI_-prefixed name or the bare name already used by the
+    # n8n container in docker-compose.yml, so the two surfaces stay in sync.
+    # Empty = the NetSuite client refuses to run (fail closed).
+    vault_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("CAVI_VAULT_URL", "VAULT_URL"),
+    )
+    netsuite_rest_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("CAVI_NETSUITE_REST_URL", "NETSUITE_REST_URL"),
+    )
+
     # --- Hermes bridge (Beacon alert delivery) ---
     # The gateway's POST /notify endpoint. Empty string = no real delivery, so
     # Beacon degrades to log-only (safe default for local/dev + tests).

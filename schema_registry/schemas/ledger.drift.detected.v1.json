@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cavi:ledger.drift.detected.v1",
+  "title": "Ledger Drift Detected",
+  "description": "Emitted by Ledger when a reconciliation pass finds Cavi and the ERP disagreeing. Advisory only: a human disposes each discrepancy; any correction goes through the forge.write approval gate as a new proposal.",
+  "type": "object",
+  "required": ["tenant_id", "erp_platform", "scope", "run_id", "discrepancies", "detected_at"],
+  "additionalProperties": false,
+  "properties": {
+    "tenant_id": { "type": "string", "minLength": 1, "description": "Owning tenant. Never empty." },
+    "erp_platform": { "type": "string", "minLength": 1, "description": "ERP the drift was detected against." },
+    "scope": { "type": "string", "minLength": 1, "description": "Record type reconciled, e.g. journalEntry." },
+    "run_id": { "type": "string", "minLength": 1, "description": "Correlates with ledger.reconciliation.completed." },
+    "discrepancies": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Every disagreement found this pass.",
+      "items": {
+        "type": "object",
+        "required": ["external_id", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "external_id": { "type": "string", "minLength": 1, "description": "External id (write idempotency key) of the record." },
+          "kind": { "type": "string", "enum": ["missing_in_erp", "unexpected_in_erp", "field_mismatch"], "description": "How the two sides disagree." },
+          "fields": {
+            "type": "array",
+            "minItems": 1,
+            "description": "For field_mismatch: each managed field that differs.",
+            "items": {
+              "type": "object",
+              "required": ["field"],
+              "additionalProperties": false,
+              "properties": {
+                "field": { "type": "string", "minLength": 1, "description": "Managed field name." },
+                "expected": { "description": "Value Cavi holds (free-form)." },
+                "actual": { "description": "Value the ERP holds (free-form)." }
+              }
+            }
+          }
+        }
+      }
+    },
+    "detected_at": { "type": "string", "format": "date-time", "description": "ISO 8601 detection timestamp." }
+  }
+}

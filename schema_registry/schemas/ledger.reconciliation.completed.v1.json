@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cavi:ledger.reconciliation.completed.v1",
+  "title": "Ledger Reconciliation Completed",
+  "description": "Emitted by Ledger after every reconciliation pass, drift or not — the heartbeat that Cavi and the ERP were compared. Discrepancy details ride on ledger.drift.detected.",
+  "type": "object",
+  "required": ["tenant_id", "erp_platform", "scope", "run_id", "checked", "matched", "drift_count", "completed_at"],
+  "additionalProperties": false,
+  "properties": {
+    "tenant_id": { "type": "string", "minLength": 1, "description": "Owning tenant. Never empty." },
+    "erp_platform": { "type": "string", "minLength": 1, "description": "ERP reconciled against." },
+    "scope": { "type": "string", "minLength": 1, "description": "Record type reconciled, e.g. journalEntry." },
+    "run_id": { "type": "string", "minLength": 1, "description": "Correlates this pass with its drift event." },
+    "checked": { "type": "integer", "minimum": 0, "description": "Distinct external ids examined across both sides." },
+    "matched": { "type": "integer", "minimum": 0, "description": "Records with no discrepancy." },
+    "drift_count": { "type": "integer", "minimum": 0, "description": "Discrepancies found this pass." },
+    "completed_at": { "type": "string", "format": "date-time", "description": "ISO 8601 completion timestamp." }
+  }
+}

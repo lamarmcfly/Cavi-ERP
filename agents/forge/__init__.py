@@ -1,4 +1,5 @@
 from agents.forge.agent import ForgeAgent
+from agents.forge.breaker import BreakerOpen, BreakerState, CircuitBreaker
 from agents.forge.forge import (
     CompletionResult,
     Forge,
@@ -8,6 +9,8 @@ from agents.forge.forge import (
     WorkOrderState,
 )
 from agents.forge.write import (
+    BatchExecution,
+    ErpReader,
     ErpWriteError,
     ErpWriter,
     UnconfiguredErpWriter,
@@ -15,6 +18,7 @@ from agents.forge.write import (
     WriteOperation,
     WriteState,
     WriteStep,
+    render_diff,
 )
 from agents.forge.write_agent import ForgeWriteAgent
 
@@ -33,6 +37,13 @@ __all__ = [
     "WriteState",
     "WriteStep",
     "ErpWriter",
+    "ErpReader",
     "ErpWriteError",
     "UnconfiguredErpWriter",
+    "render_diff",
+    "BatchExecution",
+    # failure handling
+    "CircuitBreaker",
+    "BreakerOpen",
+    "BreakerState",
 ]

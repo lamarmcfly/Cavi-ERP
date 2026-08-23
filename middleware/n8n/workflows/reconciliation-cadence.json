@@ -1,0 +1,54 @@
+{
+  "name": "cavi · reconciliation-cadence",
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "meta": {},
+  "pinData": {},
+  "tags": [],
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 1 }]
+        }
+      },
+      "id": "trg-schedule",
+      "name": "Every hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Reconciliation cadence: on Ticker's clock (this schedule), tell Ledger to\n// compare what Cavi believes the ERP holds against what it actually holds.\n// The interval above is the drift-detection window (PRD NFR4) — tighten it\n// with the design partner. Advisory only: the pass that this triggers never\n// corrects anything; drift is surfaced to a human via Beacon.\nreturn {\n  json: {\n    subject: 'ticker.reconciliation.due',\n    schema_version: 1,\n    source: 'n8n:reconciliation-cadence',\n    correlation_id: null,\n    payload: {\n      tenant_id: $env.CAVI_RECONCILE_TENANT || 'tenant-acme',\n      erp_platform: 'netsuite',\n      scope: $env.CAVI_RECONCILE_SCOPE || 'journalEntry',\n      due_at: new Date().toISOString(),\n    },\n  },\n};"
+      },
+      "id": "fn-build-due",
+      "name": "Build reconciliation.due",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "operation": "publish",
+        "channel": "ticker.reconciliation.due",
+        "messageData": "={{ JSON.stringify($json) }}"
+      },
+      "id": "pub-reconciliation-due",
+      "name": "Publish reconciliation.due",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [800, 300],
+      "credentials": { "redis": { "id": "cavi-redis", "name": "Cavi Redis" } }
+    }
+  ],
+  "connections": {
+    "Every hour": {
+      "main": [[{ "node": "Build reconciliation.due", "type": "main", "index": 0 }]]
+    },
+    "Build reconciliation.due": {
+      "main": [[{ "node": "Publish reconciliation.due", "type": "main", "index": 0 }]]
+    }
+  }
+}

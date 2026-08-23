@@ -107,6 +107,25 @@ services:
   forge:
     <<: *agent
     command: ["python", "-m", "agents.forge.agent"]
+  # ERP write-back lifecycle (propose -> human approval -> execute). Executes
+  # approved writes through the Vault-signed NetSuite client; with the NetSuite
+  # URL unset it still runs the approval lifecycle but approved writes fail
+  # closed instead of posting.
+  forge-write:
+    <<: *agent
+    command: ["python", "-m", "agents.forge.write_agent"]
+    environment:
+      <<: *agent-env
+      VAULT_URL: http://vault:8080
+      CAVI_VAULT_API_SECRET: ${CAVI_VAULT_API_SECRET:-dev-vault-secret}
+      NETSUITE_REST_URL: ${NETSUITE_REST_URL:-}
+  # Reconciliation / drift detection: runs a Cavi-vs-ERP comparison pass when
+  # the n8n reconciliation-cadence workflow publishes ticker.reconciliation.due.
+  # Advisory only — drift is surfaced via Beacon, never auto-corrected. Without
+  # configured state sources a due event dead-letters (fail closed).
+  ledger-reconcile:
+    <<: *agent
+    command: ["python", "-m", "agents.ledger.reconcile_agent"]
   ticker:
     <<: *agent
     command: ["python", "-m", "agents.ticker.agent"]

@@ -16,16 +16,22 @@ Two invariants live here, enforced by a small state machine:
     rejected write or complete one twice. Illegal moves raise `InvalidTransition`.
 
 The actual ERP call is an injected `ErpWriter`, so this layer is fully testable
-with no live ERP. A production writer would sign the request with a Vault-vended
-token and call the ERP's REST API, returning its confirmation record.
+with no live ERP; `agents/forge/netsuite.py` is the production implementation
+(Vault-signed, idempotency-keyed NetSuite REST).
+
+The dry-run diff the reviewer approves against is likewise injectable: when an
+`ErpReader` is configured, `request()` fetches the record's *current* ERP state
+and derives the before/after diff from it — the preview is computed, never
+asserted by the caller (see `render_diff`).
 """
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Callable, Mapping, Protocol
+from typing import Callable, Mapping, Protocol, Sequence
 
 from agents.forge.forge import ForgeError, InvalidTransition
 
@@ -67,6 +73,40 @@ class WriteOperation:
     requested_by: str
     diff_preview: str
     state: WriteState = WriteState.REQUESTED
+    # For a compensating write: the write_id of the COMPLETED write this one
+    # reverses. None for an ordinary write. The reversal is a full lifecycle of
+    # its own (request -> approval -> execute), so the reversal itself is
+    # approved and audited; this field is the audit link between the two.
+    reverses: str | None = None
+    # For an update: the ERP external id of the *existing* record this write
+    # modifies (e.g. the creating write's idempotency key, "cavi-<write_id>").
+    # None for a create. This is deliberately separate from `idempotency_key`:
+    # that key is minted fresh per write for retry-dedup, so it can never
+    # address a pre-existing record — an update routed by it would upsert a
+    # duplicate instead of modifying the target.
+    target_external_id: str | None = None
+
+    @property
+    def idempotency_key(self) -> str:
+        """Stable key the writer MUST hand the ERP as its idempotency /
+        external id, so a retry of the *same* write can never double-post.
+
+        Derived from `write_id`, which is minted once per write and unchanged
+        across retries, and namespaced so it never collides with an id space
+        the ERP already uses. A failed `execute()` leaves the op APPROVED and
+        retryable (see `WriteCoordinator.execute`); every retry therefore
+        presents this identical key, and an ERP that honors it dedupes the
+        commit to exactly one record.
+        """
+        return f"cavi-{self.write_id}"
+
+    @property
+    def erp_address(self) -> str:
+        """The external id this write is addressed to in the ERP: the existing
+        record's id for an update, this write's own idempotency key for a
+        create. The dry-run reader and the writer MUST both use this, so the
+        diff a human approves describes the same record the write will touch."""
+        return self.target_external_id or self.idempotency_key
 
     def transition_to(self, new_state: WriteState) -> "WriteOperation":
         if new_state not in _ALLOWED[self.state]:
@@ -79,7 +119,14 @@ class WriteOperation:
 class ErpWriter(Protocol):
     """How an approved write is applied to the ERP. Injected so the lifecycle is
     testable without a live ERP. Returns the ERP's confirmation record (ids,
-    revision, receipt), which rides on `forge.write.completed`."""
+    revision, receipt), which rides on `forge.write.completed`.
+
+    Contract: an implementation MUST send ``op.idempotency_key`` to the ERP as
+    its idempotency / external-id so a retried write (after a lost response or a
+    transient failure) is deduped to a single commit by the ERP. The default
+    ``UnconfiguredErpWriter`` refuses to run at all; a real writer (e.g.
+    NetSuite) sets the external id from this key on every request.
+    """
 
     def apply(self, op: "WriteOperation") -> dict: ...
 
@@ -94,6 +141,54 @@ class UnconfiguredErpWriter:
         )
 
 
+class ErpReader(Protocol):
+    """How the current ERP state of the record a write targets is fetched, for
+    the dry-run diff a reviewer approves against. Returns the record as the ERP
+    holds it now, or ``None`` if it does not exist yet (a create). Injected so
+    the lifecycle is testable without a live ERP; a fetch failure should raise
+    (fail closed) rather than return a guess — a proposal whose before-state is
+    unknown must not present a fabricated diff for approval."""
+
+    def fetch(self, op: "WriteOperation") -> Mapping | None: ...
+
+
+#: Preview used when no reader is configured and the caller supplied none —
+#: explicit about the gap instead of an empty string a reviewer might skim past.
+NO_DRY_RUN_PREVIEW = "(dry-run unavailable: no ERP reader configured)"
+
+
+def _fmt(value: object) -> str:
+    """Compact, deterministic rendering of a field value for the diff."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def render_diff(before: Mapping | None, op: "WriteOperation") -> str:
+    """Derive the before/after diff a reviewer signs off on.
+
+    ``before`` is the record's current ERP state (``None`` = does not exist).
+    The write is an upsert of the fields in ``op.payload``: fields not sent are
+    left untouched by the ERP, so the diff shows only additions and changes —
+    never a removal for a field merely absent from the payload.
+    """
+    exists = before is not None
+    current: Mapping = before or {}
+    header = (
+        f"{op.erp_platform} {op.target_module} eid {op.erp_address} — "
+        f"{op.operation} ({'updates existing record' if exists else 'no existing record'})"
+    )
+    lines: list[str] = []
+    for key in sorted(op.payload):
+        new = op.payload[key]
+        if key not in current:
+            lines.append(f"+ {key}: {_fmt(new)}")
+        elif current[key] != new:
+            lines.append(f"- {key}: {_fmt(current[key])}")
+            lines.append(f"+ {key}: {_fmt(new)}")
+    if not lines:
+        lines.append("(no field changes — ERP record already matches the payload)")
+    return "\n".join([header, *lines])
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -106,6 +201,9 @@ def _new_write_id() -> str:
 # Canonical payload builders (pure)
 # --------------------------------------------------------------------------- #
 def requested_payload(op: WriteOperation, *, requested_at: str) -> dict:
+    # forge.write.requested v3: `reverses` and `target_external_id` are always
+    # present (null when not applicable) — canonical contracts have no
+    # optional fields.
     return {
         "tenant_id": op.tenant_id,
         "erp_platform": op.erp_platform,
@@ -115,6 +213,8 @@ def requested_payload(op: WriteOperation, *, requested_at: str) -> dict:
         "requested_by": op.requested_by,
         "requested_at": requested_at,
         "diff_preview": op.diff_preview,
+        "reverses": op.reverses,
+        "target_external_id": op.target_external_id,
     }
 
 
@@ -158,11 +258,32 @@ def completed_payload(
 @dataclass(frozen=True)
 class WriteStep:
     """The result of one lifecycle step: the new operation state plus the
-    canonical event (subject + payload) to publish for it."""
+    canonical event (subject + schema version + payload) to publish for it."""
 
     op: WriteOperation
     subject: str
     event: dict
+    schema_version: int = 1
+
+
+@dataclass(frozen=True)
+class BatchExecution:
+    """Outcome of `execute_batch`: what committed, what failed, what was never
+    attempted. `partial` is the halt-and-escalate condition — some writes
+    committed and the rest did not, which a human must see."""
+
+    steps: tuple[WriteStep, ...]
+    failed: WriteOperation | None = None
+    error: str | None = None
+    not_attempted: tuple[WriteOperation, ...] = ()
+
+    @property
+    def halted(self) -> bool:
+        return self.failed is not None
+
+    @property
+    def partial(self) -> bool:
+        return self.halted and bool(self.steps)
 
 
 class WriteCoordinator:
@@ -174,10 +295,12 @@ class WriteCoordinator:
         self,
         writer: ErpWriter | None = None,
         *,
+        reader: ErpReader | None = None,
         clock: Callable[[], str] = _now_iso,
         id_factory: Callable[[], str] = _new_write_id,
     ) -> None:
         self._writer = writer or UnconfiguredErpWriter()
+        self._reader = reader
         self._clock = clock
         self._id = id_factory
 
@@ -190,7 +313,9 @@ class WriteCoordinator:
         target_module: str,
         payload: Mapping,
         requested_by: str,
-        diff_preview: str,
+        diff_preview: str | None = None,
+        reverses: str | None = None,
+        target_external_id: str | None = None,
     ) -> WriteStep:
         op = WriteOperation(
             write_id=self._id(),
@@ -200,10 +325,64 @@ class WriteCoordinator:
             target_module=target_module,
             payload=dict(payload),
             requested_by=requested_by,
-            diff_preview=diff_preview,
+            diff_preview="",
+            reverses=reverses,
+            target_external_id=target_external_id,
         )
+        # With a reader configured the preview is *derived* from current ERP
+        # state — a caller-supplied string is ignored so the reviewer never
+        # approves against an asserted (possibly stale or wrong) diff. A fetch
+        # failure propagates: no proposal is recorded with a fabricated diff.
+        if self._reader is not None:
+            preview = render_diff(self._reader.fetch(op), op)
+        else:
+            preview = diff_preview if diff_preview is not None else NO_DRY_RUN_PREVIEW
+        op = replace(op, diff_preview=preview)
         return WriteStep(
-            op, "forge.write.requested", requested_payload(op, requested_at=self._clock())
+            op,
+            "forge.write.requested",
+            requested_payload(op, requested_at=self._clock()),
+            schema_version=3,
+        )
+
+    def request_reversal(
+        self,
+        original: WriteOperation,
+        *,
+        operation: str,
+        payload: Mapping,
+        requested_by: str,
+        diff_preview: str | None = None,
+        target_external_id: str | None = None,
+    ) -> WriteStep:
+        """Propose a compensating write for a COMPLETED write.
+
+        The reversal is a *new* lifecycle — its own write_id, its own dry-run,
+        its own human approval, its own audit trail — linked to the original
+        via ``reverses``. Only a COMPLETED write can be reversed: reversing a
+        write that never reached the ERP would fabricate a compensation for
+        nothing. The compensating ``operation`` + ``payload`` are the caller's
+        (domain-specific: a reversing journal entry, a counter-adjustment);
+        this layer guarantees the linkage and the gate, not the accounting.
+        """
+        if original.state is not WriteState.COMPLETED:
+            raise InvalidTransition(
+                f"write {original.write_id}: cannot reverse from "
+                f"{original.state.value} (only a completed write is reversible)"
+            )
+        # An update-style compensation (e.g. a void) targets the record the
+        # original write touched; a create-style one (a reversing entry) makes
+        # a new record and passes no target.
+        return self.request(
+            tenant_id=original.tenant_id,
+            erp_platform=original.erp_platform,
+            operation=operation,
+            target_module=original.target_module,
+            payload=payload,
+            requested_by=requested_by,
+            diff_preview=diff_preview,
+            reverses=original.write_id,
+            target_external_id=target_external_id,
         )
 
     def approve(self, op: WriteOperation, approved_by: str) -> WriteStep:
@@ -240,3 +419,33 @@ class WriteCoordinator:
             "forge.write.completed",
             completed_payload(completed, confirmation, completed_at=self._clock()),
         )
+
+    def execute_batch(self, ops: Sequence[WriteOperation]) -> "BatchExecution":
+        """Execute an approved batch, halting on the first failure.
+
+        Guards the *whole* batch on APPROVED before any ERP call, then executes
+        sequentially. On failure: nothing after the failed write is attempted,
+        and the returned `BatchExecution` reports exactly what committed, what
+        failed, and what was never tried — a partial batch halts loudly, it
+        never leaves half-posted state unreported (Story 6.1). Committed writes
+        are not rolled back here: undoing an ERP commit is a *reversal*, which
+        needs its own human approval (`request_reversal`).
+        """
+        for op in ops:
+            if op.state is not WriteState.APPROVED:
+                raise InvalidTransition(
+                    f"batch refused: write {op.write_id} is {op.state.value}, "
+                    "not approved — no write in the batch was executed"
+                )
+        completed: list[WriteStep] = []
+        for index, op in enumerate(ops):
+            try:
+                completed.append(self.execute(op))
+            except ErpWriteError as exc:
+                return BatchExecution(
+                    steps=tuple(completed),
+                    failed=op,
+                    error=str(exc),
+                    not_attempted=tuple(ops[index + 1:]),
+                )
+        return BatchExecution(steps=tuple(completed))

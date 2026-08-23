@@ -20,6 +20,7 @@ import logging
 
 from agents.base import BaseAgent, Event
 from agents.mapper.erp import ErpTransformError, ErpTransformer
+from agents.mapper.netsuite_records import register_netsuite_mappings
 
 log = logging.getLogger("cavi.mapper.erp")
 
@@ -29,7 +30,9 @@ class ErpMapperAgent(BaseAgent):
 
     def __init__(self, transformer: ErpTransformer | None = None) -> None:
         super().__init__()
-        self.transformer = transformer or ErpTransformer()
+        # Default transformer ships with the Cavi -> NetSuite reference
+        # mappings (item / adjustment / transfer) registered.
+        self.transformer = transformer or register_netsuite_mappings(ErpTransformer())
 
     @property
     def subjects(self) -> list[str]:

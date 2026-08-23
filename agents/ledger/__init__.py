@@ -14,6 +14,19 @@ from agents.ledger.query import (
     UnconfiguredErpReader,
 )
 from agents.ledger.query_agent import LedgerQueryAgent
+from agents.ledger.reconcile import (
+    Discrepancy,
+    ReconciliationResult,
+    Reconciler,
+    compare,
+)
+from agents.ledger.reconcile_agent import (
+    ErpStateSource,
+    ExpectedStateSource,
+    LedgerReconcileAgent,
+    SourceUnavailable,
+    UnconfiguredSource,
+)
 
 __all__ = [
     "LedgerAgent",
@@ -29,4 +42,14 @@ __all__ = [
     "ErpReader",
     "LedgerQueryError",
     "UnconfiguredErpReader",
+    # reconciliation / drift detection
+    "LedgerReconcileAgent",
+    "Reconciler",
+    "ReconciliationResult",
+    "Discrepancy",
+    "compare",
+    "ExpectedStateSource",
+    "ErpStateSource",
+    "SourceUnavailable",
+    "UnconfiguredSource",
 ]
