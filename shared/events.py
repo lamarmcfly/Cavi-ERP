@@ -11,6 +11,12 @@ The store is an injected dependency so ``BaseAgent`` is testable without a
 database: ``InMemoryEventStore`` for tests, ``PostgresEventStore`` in production.
 Both are idempotent on the event id (``ON CONFLICT DO NOTHING``), so an
 at-least-once redelivery never double-writes the log.
+
+Both stores also maintain the **hash chain** (see ``shared/audit.py``): each
+recorded event's ``chain_hash`` covers the previous event's hash plus its own
+canonical content, making the log tamper-evident, not merely append-only.
+Postgres serializes chain writes with a transaction-scoped advisory lock so
+concurrent agents cannot fork the chain.
 """
 from __future__ import annotations
 
@@ -18,6 +24,10 @@ import uuid
 from typing import Mapping, Protocol
 
 from agents.base.contract import Event
+from shared.audit import GENESIS_HASH, chain_hash
+
+#: pg_advisory_xact_lock key serializing event_log chain appends ("caviaud").
+_CHAIN_LOCK_KEY = 0x63617669_617564
 
 
 class EventStore(Protocol):
@@ -26,10 +36,12 @@ class EventStore(Protocol):
 
 
 class InMemoryEventStore:
-    """Volatile store for tests. Idempotent on event id, mirroring Postgres."""
+    """Volatile store for tests. Idempotent on event id, mirroring Postgres —
+    including the hash chain (`chain_hashes[i]` covers `events[i]`)."""
 
     def __init__(self) -> None:
         self.events: list[Event] = []
+        self.chain_hashes: list[str] = []
         self.deadletters: list[dict] = []
         self._event_ids: set[str] = set()
         self._deadletter_ids: set[str] = set()
@@ -38,6 +50,8 @@ class InMemoryEventStore:
         if event.id in self._event_ids:
             return
         self._event_ids.add(event.id)
+        prev = self.chain_hashes[-1] if self.chain_hashes else GENESIS_HASH
+        self.chain_hashes.append(chain_hash(prev, event.to_dict()))
         self.events.append(event)
 
     def record_deadletter(self, envelope: Mapping) -> None:
@@ -70,10 +84,20 @@ class PostgresEventStore:
         from shared.db import connection
 
         with connection() as conn:
+            # Serialize chain appends: without this, two concurrent writers
+            # could both read the same tip and fork the chain. The lock is
+            # transaction-scoped, released automatically at commit/rollback.
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_CHAIN_LOCK_KEY,))
+            row = conn.execute(
+                "SELECT chain_hash FROM event_log "
+                "WHERE chain_hash IS NOT NULL ORDER BY seq DESC LIMIT 1"
+            ).fetchone()
+            prev = row[0] if row else GENESIS_HASH
             conn.execute(
                 "INSERT INTO event_log "
-                "(id, subject, schema_version, source, correlation_id, tenant_id, payload) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+                "(id, subject, schema_version, source, correlation_id, tenant_id, "
+                " payload, chain_hash) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
                 (
                     _as_uuid(event.id),
                     event.subject,
@@ -82,6 +106,7 @@ class PostgresEventStore:
                     _as_uuid(event.correlation_id),
                     event.tenant_id,
                     Json(event.payload),
+                    chain_hash(prev, event.to_dict()),
                 ),
             )
 

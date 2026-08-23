@@ -18,6 +18,16 @@ EVENTS_EMITTED = "cavi_events_emitted_total"
 EVENTS_DISPATCHED = "cavi_events_dispatched_total"
 DEADLETTERS = "cavi_deadletters_total"
 
+# --- ERP write-back path (W10 / NFR6). Every write is visible: lifecycle
+# stage counts, failures, summed execute latency (seconds / count = average),
+# breaker trips, reconciliation passes, and drift found.
+ERP_WRITES = "cavi_erp_writes_total"                    # label: stage
+ERP_WRITE_FAILURES = "cavi_erp_write_failures_total"    # label: reason
+ERP_WRITE_SECONDS = "cavi_erp_write_seconds_total"      # summed execute latency
+BREAKER_OPENS = "cavi_erp_breaker_opens_total"
+RECONCILIATIONS = "cavi_erp_reconciliations_total"
+DRIFT_FOUND = "cavi_erp_drift_total"                    # label: kind
+
 _LabelKey = tuple[tuple[str, str], ...]
 
 

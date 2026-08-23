@@ -99,10 +99,10 @@ Audit of the repository at the time of this PRD. Epics in Section 6 build on thi
 1. ~~**The live `netsuite-sync` workflow bypasses the approval gate.**~~ **Closed (W1).** The workflow now files a `forge.write.propose` on `ledger.posted` and performs no ERP call; nothing reaches NetSuite without a `forge.write.decision` approving it.
 2. ~~**No ERP-side idempotency.**~~ **Closed (W2).** `WriteOperation.idempotency_key` is a stable, namespaced key the writer contract requires be sent to the ERP; a lost-response retry is proven not to double-post.
 3. ~~**Dry-run is a free-form string.**~~ **Closed (W4).** With an `ErpReader` configured, the `diff_preview` is derived from the record's current ERP state (`render_diff`); a caller-supplied string is ignored, and a failed dry-run fetch fails closed (the propose event is dead-lettered for Beacon, never recorded with a fabricated diff).
-4. **`event_log` is durable but not hash-chained.** Auditable, not yet tamper-evident.
+4. ~~**`event_log` is durable but not hash-chained.**~~ **Closed (W7).** Every recorded event carries `chain_hash = sha256(prev_hash + canonical(event))` (migration 0004; Postgres serializes appends with an advisory lock, so concurrent writers cannot fork the chain). Editing, deleting, or reordering any chained row breaks every hash after it. `scripts/audit_export.py` exports the log as self-verifying JSONL and `--verify` recomputes the chain — checkable by anyone holding the export, without trusting the database. The chain era starts at migration 0004; pre-chain rows stay explicitly unchained rather than pretending to notarize prior history.
 5. ~~**No reconciliation or drift detection.**~~ **Closed (W6) at the platform level.** Scheduled passes (n8n `reconciliation-cadence` → `ticker.reconciliation.due`) drive `LedgerReconcileAgent`: every pass emits a `ledger.reconciliation.completed` heartbeat; discrepancies (missing-in-ERP, unexpected-in-ERP, field mismatch on managed fields only) additionally emit `ledger.drift.detected`, which Beacon surfaces as a WARNING a human disposes — never an auto-correction. Remaining for the Epic 4 gate: the production state sources (an `event_log` projection for the Cavi side, a Vault-signed NetSuite bulk query for the ERP side) — until they are wired, a due event dead-letters (fail closed) rather than reporting a pass that never ran.
 6. ~~**The real NetSuite `ErpWriter` is not yet wired (W3).**~~ **Closed (W3).** `agents/forge/netsuite.py` implements both writer and reader: every request is Vault-signed (`/sign`; secrets never leave Vault), writes are external-id upserts keyed by the idempotency key so NetSuite dedupes retries, and every refusal — missing config, Vault denial, ERP rejection, transport failure, unsupported operation — fails closed. Wired into the `forge-write` compose service; sandbox validation against a live NetSuite account is the remaining Epic 1/3 gate work.
-7. **No reversal flow, circuit breaker, or partial-batch halt.** Greenfield (W8, W9).
+7. ~~**No reversal flow, circuit breaker, or partial-batch halt.**~~ **Closed (W8, W9).** A reversal is a *new* `forge.write` lifecycle — its own write_id, dry-run, human approval, and audit trail — linked to its COMPLETED original via the required-nullable `reverses` field (`forge.write.requested` v2; v1 producers coerce through Mapper). Only a completed write is reversible. The circuit breaker trips after consecutive ERP failures (writes stay APPROVED and retryable; the trip is escalated once via dead-letter/Beacon; one half-open probe after cooldown). `execute_batch` guards the whole batch on APPROVED before any ERP call, halts at the first failure, and reports exactly what committed / failed / was never attempted — a partial batch is loud, never silent.
 
 ---
 
@@ -116,10 +116,10 @@ Order is by risk: governance-critical fixes to paths that exist today come first
 - **W4 — True dry-run diffs** (Epic 3 / FR3). **Done.** With a reader configured, `request()` fetches the record's current ERP state and derives the diff (`render_diff`) — the caller's asserted preview is ignored; a failed fetch dead-letters the proposal (fail closed) rather than recording a fabricated diff.
 - **W5 — Partner record-type mappings** (Epic 2 / FR2). **Done (reference tables).** `agents/mapper/netsuite_records.py`: declarative mappings for lot-numbered inventory item, inventory adjustment, and transfer order, registered on the Mapper ERP transformer. Missing required fields block with *every* gap surfaced at once (line-level included); an undeclared Cavi field blocks rather than silently drops — every field maps or is explicitly declared unmapped. Remaining for the Epic 2 gate: partner sign-off on the mapping table, custom fields, and chart-of-accounts targets (§7).
 - **W6 — Reconciliation and drift** (Epic 4 / FR6). **Done (platform).** n8n `reconciliation-cadence` publishes `ticker.reconciliation.due` on the drift window (NFR4 knob); `LedgerReconcileAgent` compares expected vs actual by external id (managed fields only), always emits the `ledger.reconciliation.completed` heartbeat, and emits `ledger.drift.detected` on discrepancies — surfaced by Beacon as an advisory WARNING a human disposes. Unconfigured or failing state sources dead-letter the due event (fail closed). Remaining for the Epic 4 gate: production state sources (event_log projection + NetSuite bulk query) and the partner's reconciliation scope/window.
-- **W7 — Hash-chained audit log** (Epic 5 / FR7). `prev_hash` chaining on `event_log` writes plus an export and a chain-verification tool.
-- **W8 — Reversal / compensating writes** (Epic 5 / FR8). Reversal modeled as a new `forge.write` lifecycle referencing the original `write_id`; both actions on the chain.
-- **W9 — Circuit breaker and partial-batch halt** (Epic 6 / FR9). Repeated failures trip a breaker and escalate; a partial batch halts, escalates, and leaves no unreported half-posted state.
-- **W10 — Write-path observability** (Epic 5 / NFR6). Extend the existing metrics/health layer with write latency, failure, retry, and drift counts; dashboard for write health.
+- **W7 — Hash-chained audit log** (Epic 5 / FR7). **Done.** `shared/audit.py` + migration 0004: chained `event_log` writes (advisory-locked in Postgres, mirrored in the in-memory store), tamper detection proven for edit/delete/reorder, and a self-verifying JSONL export (`scripts/audit_export.py`, `--verify` exits non-zero on any break).
+- **W8 — Reversal / compensating writes** (Epic 5 / FR8). **Done.** `request_reversal` on the coordinator plus the `forge.write.reverse` trigger: only COMPLETED writes reversible, linkage via `reverses` on `forge.write.requested` v2, and the reversal passes through the same dry-run + approval gate — both actions land on the audit chain.
+- **W9 — Circuit breaker and partial-batch halt** (Epic 6 / FR9). **Done.** `agents/forge/breaker.py` (closed/open/half-open, single-probe recovery, escalate-once on trip) wired into the write agent; `execute_batch` halts on first failure with a full committed/failed/not-attempted report and refuses a batch containing any unapproved write before touching the ERP.
+- **W10 — Write-path observability** (Epic 5 / NFR6). **Done (metrics).** New counters on the existing scrapeable `/metrics` surface: write lifecycle stages, failures by reason, summed execute latency, breaker trips, reconciliation passes, drift by kind. A rendered dashboard over these lives in Mission Control (cavi-core), not this repo.
 
 ---
 
@@ -152,16 +152,16 @@ No epic is considered done, and no downstream epic starts trusting its output, u
 - **Gate:** an injected discrepancy is detected and correctly surfaced. *(proven in-memory for all three kinds — `tests/test_ledger_reconcile.py`; gate closes end-to-end once production state sources land)*
 
 ### Epic 5: Audit, reversibility, and observability (Beacon)
-- Story 5.1: Hash-chained write log. Acceptance: the log is tamper-evident and exportable. *(W7)*
-- Story 5.2: Reversal / compensating action for a committed write. Acceptance: a reversal is itself recorded and auditable. *(W8)*
-- Story 5.3: Observability dashboard for write health. Acceptance: latency, failures, retries, and drift are visible. *(W10; base layer built)*
-- **Gate:** a committed write is audited and reversed end to end, with both actions on the chain.
+- Story 5.1: Hash-chained write log. Acceptance: the log is tamper-evident and exportable. *(done: W7 — edit/delete/reorder detection proven; self-verifying export)*
+- Story 5.2: Reversal / compensating action for a committed write. Acceptance: a reversal is itself recorded and auditable. *(done: W8 — a full second lifecycle, linked via `reverses`, through the same gate)*
+- Story 5.3: Observability dashboard for write health. Acceptance: latency, failures, retries, and drift are visible. *(metrics done: W10 — exposed at `/metrics`; the rendered dashboard is Mission Control / cavi-core)*
+- **Gate:** a committed write is audited and reversed end to end, with both actions on the chain. *(mechanism complete; run end-to-end in the sandbox alongside the Epic 3 gate)*
 
 ### Epic 6: Failure handling and fail-closed recovery
-- Story 6.1: Partial-write detection and halt. Acceptance: a partial batch halts and escalates; no half-posted state is left unreported.
-- Story 6.2: Retry and circuit-breaker policy. Acceptance: repeated failures trip a breaker and escalate rather than hammering the ERP.
+- Story 6.1: Partial-write detection and halt. Acceptance: a partial batch halts and escalates; no half-posted state is left unreported. *(done: W9 — `execute_batch` halts at first failure and reports committed / failed / not-attempted)*
+- Story 6.2: Retry and circuit-breaker policy. Acceptance: repeated failures trip a breaker and escalate rather than hammering the ERP. *(done: W9 — escalates once on trip via dead-letter → Beacon; writes stay APPROVED and retryable)*
 - Story 6.3: [Partner-specific recovery runbook.]
-- **Gate:** a forced partial failure results in a clean halt, escalation, and a documented recovery path.
+- **Gate:** a forced partial failure results in a clean halt, escalation, and a documented recovery path. *(halt + escalation proven in tests; the runbook is partner-facing gate work)*
 
 ---
 

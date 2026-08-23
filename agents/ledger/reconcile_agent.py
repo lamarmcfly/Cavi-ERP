@@ -29,6 +29,7 @@ from typing import Mapping, Protocol
 
 from agents.base import BaseAgent, Event
 from agents.ledger.reconcile import Reconciler
+from shared import metrics
 
 log = logging.getLogger("cavi.ledger.reconcile")
 
@@ -99,6 +100,9 @@ class LedgerReconcileAgent(BaseAgent):
             "reconciliation %s: checked=%d drift=%d (tenant=%s scope=%s)",
             result.run_id, result.checked, result.drift_count, tenant_id, scope,
         )
+        metrics.REGISTRY.inc(metrics.RECONCILIATIONS)
+        for discrepancy in result.discrepancies:
+            metrics.REGISTRY.inc(metrics.DRIFT_FOUND, kind=discrepancy.kind)
         self._emit("ledger.reconciliation.completed", result.completed_payload(), event)
         drift = result.drift_payload()
         if drift is not None:

@@ -22,7 +22,18 @@ def ledger_entry_v1_to_v2(payload: dict) -> dict:
     return out
 
 
+def forge_write_requested_v1_to_v2(payload: dict) -> dict:
+    """forge.write.requested v1 -> v2.
+
+    v2 adds a required (nullable) `reverses` — the write_id of the completed
+    write a compensating proposal reverses. A v1 event predates reversals, so
+    it is by definition an ordinary write: reverses is null.
+    """
+    return {**payload, "reverses": None}
+
+
 def register_all(mapper: Mapper) -> Mapper:
     """Register every built-in transform on a Mapper instance."""
     mapper.register("ledger.entry", 1, 2, ledger_entry_v1_to_v2)
+    mapper.register("forge.write.requested", 1, 2, forge_write_requested_v1_to_v2)
     return mapper

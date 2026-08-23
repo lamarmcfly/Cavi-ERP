@@ -105,9 +105,11 @@ def test_full_lifecycle_emits_all_canonical_events(registry: SchemaRegistry):
     appr = coord.approve(req.op, "user:owner")
     comp = coord.execute(appr.op)
 
-    # Each event validates against its finalized contract (also enforces
-    # additionalProperties:false).
-    registry.validate("forge.write.requested", 1, req.event)
+    # Each event validates against its canonical contract (also enforces
+    # additionalProperties:false). requested is v2 (adds `reverses`); the
+    # step carries its schema version so the runtime emits the right one.
+    assert (req.schema_version, appr.schema_version, comp.schema_version) == (2, 1, 1)
+    registry.validate("forge.write.requested", 2, req.event)
     registry.validate("forge.write.approved", 1, appr.event)
     registry.validate("forge.write.completed", 1, comp.event)
 
@@ -127,14 +129,15 @@ def test_full_lifecycle_emits_all_canonical_events(registry: SchemaRegistry):
 
 def test_requested_event_carries_the_full_proposal(registry: SchemaRegistry):
     req = _coord().request(**REQUEST)
-    registry.validate("forge.write.requested", 1, req.event)
+    registry.validate("forge.write.requested", 2, req.event)
     assert set(req.event) == {
         "tenant_id", "erp_platform", "operation", "target_module",
-        "payload", "requested_by", "requested_at", "diff_preview",
+        "payload", "requested_by", "requested_at", "diff_preview", "reverses",
     }
     assert req.event["payload"] == {"customer": "ACME", "total_minor": 10_000}
     assert req.event["diff_preview"] == "+ SalesOrder ACME $100.00"
     assert req.event["requested_at"] == FIXED_TS
+    assert req.event["reverses"] is None   # ordinary write, not a compensation
 
 
 def test_reject_emits_canonical_rejected(registry: SchemaRegistry):
@@ -216,7 +219,7 @@ def test_derived_diff_for_a_create(registry: SchemaRegistry):
     reader = StubErpReader(record=None)   # record does not exist yet
     req = _coord_with_reader(reader).request(**REQUEST)
 
-    registry.validate("forge.write.requested", 1, req.event)
+    registry.validate("forge.write.requested", 2, req.event)
     diff = req.event["diff_preview"]
     # Header names exactly what will be touched, keyed by the idempotency key.
     assert diff.splitlines()[0] == (
@@ -267,7 +270,7 @@ def test_dry_run_fetch_failure_fails_closed():
 def test_no_reader_and_no_preview_yields_explicit_placeholder(registry: SchemaRegistry):
     request = {k: v for k, v in REQUEST.items() if k != "diff_preview"}
     req = _coord().request(**request)
-    registry.validate("forge.write.requested", 1, req.event)
+    registry.validate("forge.write.requested", 2, req.event)
     assert req.event["diff_preview"] == NO_DRY_RUN_PREVIEW
 
 
@@ -298,6 +301,131 @@ def test_retry_after_lost_response_does_not_double_post():
     assert comp.op.state is WriteState.COMPLETED
     assert writer.commits == 1                     # exactly one server-side commit
     assert comp.event["erp_confirmation"]["external_id"] == f"cavi-{FIXED_ID}"
+
+
+# --------------------------------------------------------------------------- #
+# Reversals (FR8) — a compensating write through the same gate
+# --------------------------------------------------------------------------- #
+def _completed_op(coord: WriteCoordinator):
+    return coord.execute(coord.approve(coord.request(**REQUEST).op, "user:owner").op).op
+
+
+def test_reversal_is_a_new_gated_lifecycle_linked_to_the_original(
+    registry: SchemaRegistry,
+):
+    coord = WriteCoordinator(
+        writer=StubErpWriter(), clock=lambda: FIXED_TS,
+        id_factory=iter(["w_orig", "w_rev"]).__next__,
+    )
+    original = _completed_op(coord)
+
+    rev = coord.request_reversal(
+        original,
+        operation="create",
+        payload={"customer": "ACME", "total_minor": -10_000},
+        requested_by="user:owner",
+        diff_preview="- reverse SalesOrder ACME",
+    )
+    registry.validate("forge.write.requested", 2, rev.event)
+    # A new lifecycle: fresh write_id, linked to the original via `reverses`.
+    assert rev.op.write_id == "w_rev" and rev.op.reverses == "w_orig"
+    assert rev.event["reverses"] == "w_orig"
+    assert rev.op.state is WriteState.REQUESTED
+
+    # The reversal obeys the same approval gate: no approval, no ERP call.
+    with pytest.raises(InvalidTransition):
+        coord.execute(rev.op)
+
+
+def test_only_a_completed_write_can_be_reversed():
+    coord = _coord()
+    req = coord.request(**REQUEST)
+    with pytest.raises(InvalidTransition, match="only a completed write"):
+        coord.request_reversal(
+            req.op, operation="create", payload={}, requested_by="u"
+        )
+    appr = coord.approve(req.op, "u")
+    with pytest.raises(InvalidTransition, match="only a completed write"):
+        coord.request_reversal(
+            appr.op, operation="create", payload={}, requested_by="u"
+        )
+
+
+def test_v1_requested_events_coerce_to_v2(registry: SchemaRegistry):
+    from agents.mapper.transforms import forge_write_requested_v1_to_v2
+
+    v1_event = {k: v for k, v in _coord().request(**REQUEST).event.items()
+                if k != "reverses"}
+    v2_event = forge_write_requested_v1_to_v2(v1_event)
+    registry.validate("forge.write.requested", 2, v2_event)
+    assert v2_event["reverses"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Batch execution (FR9, Story 6.1) — a partial batch halts and reports
+# --------------------------------------------------------------------------- #
+class FailOnErpWriter:
+    """Succeeds until the Nth apply (1-based), which raises."""
+
+    def __init__(self, fail_on: int) -> None:
+        self.calls = 0
+        self._fail_on = fail_on
+
+    def apply(self, op) -> dict:
+        self.calls += 1
+        if self.calls == self._fail_on:
+            raise ErpWriteError("ERP fell over mid-batch")
+        return {"id": f"SO-{self.calls}"}
+
+
+def _approved_batch(coord: WriteCoordinator, n: int):
+    return [
+        coord.approve(coord.request(**REQUEST).op, "user:owner").op
+        for _ in range(n)
+    ]
+
+
+def test_full_batch_executes_and_reports_no_halt():
+    ids = iter([f"w{i}" for i in range(3)])
+    coord = WriteCoordinator(
+        writer=StubErpWriter(), clock=lambda: FIXED_TS, id_factory=ids.__next__
+    )
+    result = coord.execute_batch(_approved_batch(coord, 3))
+    assert not result.halted and not result.partial
+    assert [s.op.state for s in result.steps] == [WriteState.COMPLETED] * 3
+
+
+def test_partial_batch_halts_and_reports_exactly_what_happened():
+    ids = iter([f"w{i}" for i in range(3)])
+    writer = FailOnErpWriter(fail_on=2)
+    coord = WriteCoordinator(
+        writer=writer, clock=lambda: FIXED_TS, id_factory=ids.__next__
+    )
+    batch = _approved_batch(coord, 3)
+    result = coord.execute_batch(batch)
+
+    # Halted at write 2: one committed, one failed, one never attempted —
+    # nothing after the failure touched the ERP.
+    assert result.halted and result.partial
+    assert [s.op.write_id for s in result.steps] == ["w0"]
+    assert result.failed is batch[1] and "fell over" in result.error
+    assert [op.write_id for op in result.not_attempted] == ["w2"]
+    assert writer.calls == 2
+    # The failed write is still APPROVED — retryable, never falsely completed.
+    assert result.failed.state is WriteState.APPROVED
+
+
+def test_batch_with_any_unapproved_write_is_refused_before_any_erp_call():
+    writer = StubErpWriter()
+    ids = iter([f"w{i}" for i in range(2)])
+    coord = WriteCoordinator(
+        writer=writer, clock=lambda: FIXED_TS, id_factory=ids.__next__
+    )
+    approved = coord.approve(coord.request(**REQUEST).op, "u").op
+    unapproved = coord.request(**REQUEST).op
+    with pytest.raises(InvalidTransition, match="no write in the batch"):
+        coord.execute_batch([approved, unapproved])
+    assert writer.calls == []   # the whole batch was refused up front
 
 
 def test_default_writer_refuses_until_configured():

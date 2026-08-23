@@ -90,6 +90,14 @@ proposer. When `VAULT_URL` / `CAVI_VAULT_API_SECRET` / `NETSUITE_REST_URL` are
 not configured on the Forge write agent, an approved write fails **closed**
 (the writer refuses to run) rather than posting silently.
 
+Undoing a committed write is the same shape: `forge.write.reverse` proposes a
+compensating write linked to the completed original (`reverses` on the v2
+requested event), and that reversal needs its own dry-run and human approval
+before it executes — both actions end up on the hash-chained audit log. A
+circuit breaker guards execution: repeated ERP failures trip it once, loudly
+(dead-letter → Beacon), and approved writes wait — retryable, never dropped —
+until the ERP recovers.
+
 ### Importing
 
 ```bash

@@ -31,7 +31,7 @@ import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Callable, Mapping, Protocol
+from typing import Callable, Mapping, Protocol, Sequence
 
 from agents.forge.forge import ForgeError, InvalidTransition
 
@@ -73,6 +73,11 @@ class WriteOperation:
     requested_by: str
     diff_preview: str
     state: WriteState = WriteState.REQUESTED
+    # For a compensating write: the write_id of the COMPLETED write this one
+    # reverses. None for an ordinary write. The reversal is a full lifecycle of
+    # its own (request -> approval -> execute), so the reversal itself is
+    # approved and audited; this field is the audit link between the two.
+    reverses: str | None = None
 
     @property
     def idempotency_key(self) -> str:
@@ -181,6 +186,8 @@ def _new_write_id() -> str:
 # Canonical payload builders (pure)
 # --------------------------------------------------------------------------- #
 def requested_payload(op: WriteOperation, *, requested_at: str) -> dict:
+    # forge.write.requested v2: `reverses` is always present (null for an
+    # ordinary write) — the canonical contracts have no optional fields.
     return {
         "tenant_id": op.tenant_id,
         "erp_platform": op.erp_platform,
@@ -190,6 +197,7 @@ def requested_payload(op: WriteOperation, *, requested_at: str) -> dict:
         "requested_by": op.requested_by,
         "requested_at": requested_at,
         "diff_preview": op.diff_preview,
+        "reverses": op.reverses,
     }
 
 
@@ -233,11 +241,32 @@ def completed_payload(
 @dataclass(frozen=True)
 class WriteStep:
     """The result of one lifecycle step: the new operation state plus the
-    canonical event (subject + payload) to publish for it."""
+    canonical event (subject + schema version + payload) to publish for it."""
 
     op: WriteOperation
     subject: str
     event: dict
+    schema_version: int = 1
+
+
+@dataclass(frozen=True)
+class BatchExecution:
+    """Outcome of `execute_batch`: what committed, what failed, what was never
+    attempted. `partial` is the halt-and-escalate condition — some writes
+    committed and the rest did not, which a human must see."""
+
+    steps: tuple[WriteStep, ...]
+    failed: WriteOperation | None = None
+    error: str | None = None
+    not_attempted: tuple[WriteOperation, ...] = ()
+
+    @property
+    def halted(self) -> bool:
+        return self.failed is not None
+
+    @property
+    def partial(self) -> bool:
+        return self.halted and bool(self.steps)
 
 
 class WriteCoordinator:
@@ -268,6 +297,7 @@ class WriteCoordinator:
         payload: Mapping,
         requested_by: str,
         diff_preview: str | None = None,
+        reverses: str | None = None,
     ) -> WriteStep:
         op = WriteOperation(
             write_id=self._id(),
@@ -278,6 +308,7 @@ class WriteCoordinator:
             payload=dict(payload),
             requested_by=requested_by,
             diff_preview="",
+            reverses=reverses,
         )
         # With a reader configured the preview is *derived* from current ERP
         # state — a caller-supplied string is ignored so the reviewer never
@@ -289,7 +320,45 @@ class WriteCoordinator:
             preview = diff_preview if diff_preview is not None else NO_DRY_RUN_PREVIEW
         op = replace(op, diff_preview=preview)
         return WriteStep(
-            op, "forge.write.requested", requested_payload(op, requested_at=self._clock())
+            op,
+            "forge.write.requested",
+            requested_payload(op, requested_at=self._clock()),
+            schema_version=2,
+        )
+
+    def request_reversal(
+        self,
+        original: WriteOperation,
+        *,
+        operation: str,
+        payload: Mapping,
+        requested_by: str,
+        diff_preview: str | None = None,
+    ) -> WriteStep:
+        """Propose a compensating write for a COMPLETED write.
+
+        The reversal is a *new* lifecycle — its own write_id, its own dry-run,
+        its own human approval, its own audit trail — linked to the original
+        via ``reverses``. Only a COMPLETED write can be reversed: reversing a
+        write that never reached the ERP would fabricate a compensation for
+        nothing. The compensating ``operation`` + ``payload`` are the caller's
+        (domain-specific: a reversing journal entry, a counter-adjustment);
+        this layer guarantees the linkage and the gate, not the accounting.
+        """
+        if original.state is not WriteState.COMPLETED:
+            raise InvalidTransition(
+                f"write {original.write_id}: cannot reverse from "
+                f"{original.state.value} (only a completed write is reversible)"
+            )
+        return self.request(
+            tenant_id=original.tenant_id,
+            erp_platform=original.erp_platform,
+            operation=operation,
+            target_module=original.target_module,
+            payload=payload,
+            requested_by=requested_by,
+            diff_preview=diff_preview,
+            reverses=original.write_id,
         )
 
     def approve(self, op: WriteOperation, approved_by: str) -> WriteStep:
@@ -326,3 +395,33 @@ class WriteCoordinator:
             "forge.write.completed",
             completed_payload(completed, confirmation, completed_at=self._clock()),
         )
+
+    def execute_batch(self, ops: Sequence[WriteOperation]) -> "BatchExecution":
+        """Execute an approved batch, halting on the first failure.
+
+        Guards the *whole* batch on APPROVED before any ERP call, then executes
+        sequentially. On failure: nothing after the failed write is attempted,
+        and the returned `BatchExecution` reports exactly what committed, what
+        failed, and what was never tried — a partial batch halts loudly, it
+        never leaves half-posted state unreported (Story 6.1). Committed writes
+        are not rolled back here: undoing an ERP commit is a *reversal*, which
+        needs its own human approval (`request_reversal`).
+        """
+        for op in ops:
+            if op.state is not WriteState.APPROVED:
+                raise InvalidTransition(
+                    f"batch refused: write {op.write_id} is {op.state.value}, "
+                    "not approved — no write in the batch was executed"
+                )
+        completed: list[WriteStep] = []
+        for index, op in enumerate(ops):
+            try:
+                completed.append(self.execute(op))
+            except ErpWriteError as exc:
+                return BatchExecution(
+                    steps=tuple(completed),
+                    failed=op,
+                    error=str(exc),
+                    not_attempted=tuple(ops[index + 1:]),
+                )
+        return BatchExecution(steps=tuple(completed))
