@@ -41,6 +41,7 @@ credentials/env, then toggle Active in the n8n UI.
 | `sale-to-posting.json` | `forge.completed` | Revenue recognition — derives a balanced `ledger.entry` from a completed work order | publishes `ledger.entry` |
 | `deadletter-escalation.json` | `deadletter.ledger.entry` | Escalates an unparseable financial event (CRITICAL) to a human | HTTP → Hermes gateway (Telegram) |
 | `netsuite-sync.json` | `ledger.posted` | Files a **proposal** to write a posted journal entry into NetSuite — never posts directly. Turns the posting into a `forge.write.propose` that the Forge write agent holds for human approval | publishes `forge.write.propose` |
+| `reconciliation-cadence.json` | schedule (hourly) | Ticker's clock for drift detection: tells Ledger to compare what Cavi believes the ERP holds against what it actually holds. The interval is the drift-detection window (PRD NFR4) — tune it with the design partner | publishes `ticker.reconciliation.due` |
 
 ### Required credentials / env
 

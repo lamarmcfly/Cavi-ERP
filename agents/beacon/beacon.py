@@ -57,6 +57,8 @@ def severity_for(subject: str) -> Severity:
     return {
         "ledger.rejected": Severity.WARNING,
         "vault.secret.denied": Severity.WARNING,
+        # Advisory drift flag: a human disposes it; never an auto-correction.
+        "ledger.drift.detected": Severity.WARNING,
         "ledger.posted": Severity.INFO,
         "forge.completed": Severity.INFO,
     }.get(subject, Severity.INFO)
@@ -70,6 +72,7 @@ def classify(subject: str, payload: Mapping, correlation_id: str | None = None) 
     ident = (
         payload.get("entry_id")
         or payload.get("work_order_id")
+        or payload.get("run_id")
         or payload.get("id")
         or ""
     )

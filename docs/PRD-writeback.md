@@ -100,8 +100,9 @@ Audit of the repository at the time of this PRD. Epics in Section 6 build on thi
 2. ~~**No ERP-side idempotency.**~~ **Closed (W2).** `WriteOperation.idempotency_key` is a stable, namespaced key the writer contract requires be sent to the ERP; a lost-response retry is proven not to double-post.
 3. ~~**Dry-run is a free-form string.**~~ **Closed (W4).** With an `ErpReader` configured, the `diff_preview` is derived from the record's current ERP state (`render_diff`); a caller-supplied string is ignored, and a failed dry-run fetch fails closed (the propose event is dead-lettered for Beacon, never recorded with a fabricated diff).
 4. **`event_log` is durable but not hash-chained.** Auditable, not yet tamper-evident.
-5. **No reconciliation, drift detection, reversal flow, circuit breaker, or partial-batch halt.** Greenfield.
+5. ~~**No reconciliation or drift detection.**~~ **Closed (W6) at the platform level.** Scheduled passes (n8n `reconciliation-cadence` → `ticker.reconciliation.due`) drive `LedgerReconcileAgent`: every pass emits a `ledger.reconciliation.completed` heartbeat; discrepancies (missing-in-ERP, unexpected-in-ERP, field mismatch on managed fields only) additionally emit `ledger.drift.detected`, which Beacon surfaces as a WARNING a human disposes — never an auto-correction. Remaining for the Epic 4 gate: the production state sources (an `event_log` projection for the Cavi side, a Vault-signed NetSuite bulk query for the ERP side) — until they are wired, a due event dead-letters (fail closed) rather than reporting a pass that never ran.
 6. ~~**The real NetSuite `ErpWriter` is not yet wired (W3).**~~ **Closed (W3).** `agents/forge/netsuite.py` implements both writer and reader: every request is Vault-signed (`/sign`; secrets never leave Vault), writes are external-id upserts keyed by the idempotency key so NetSuite dedupes retries, and every refusal — missing config, Vault denial, ERP rejection, transport failure, unsupported operation — fails closed. Wired into the `forge-write` compose service; sandbox validation against a live NetSuite account is the remaining Epic 1/3 gate work.
+7. **No reversal flow, circuit breaker, or partial-batch halt.** Greenfield (W8, W9).
 
 ---
 
@@ -113,8 +114,8 @@ Order is by risk: governance-critical fixes to paths that exist today come first
 - **W2 — ERP-side idempotency keys** (Epic 3 / FR5). **Done.** `WriteOperation.idempotency_key` (`cavi-{write_id}`, stable across retries) is required by the `ErpWriter` contract; `test_retry_after_lost_response_does_not_double_post` proves exactly-once against an ERP that honors the key.
 - **W3 — Real NetSuite `ErpWriter`** (Epics 1, 3). **Done (code).** `NetSuiteClient` in `agents/forge/netsuite.py`: Vault `/sign` integration, external-id upsert via NetSuite REST, fail-closed on missing config / auth errors / unsupported operations; wired into the `forge-write` compose service. Remaining for the Epic 1/3 gates: sandbox validation against a live NetSuite account, and governance-unit / rate-limit budgeting once partner volumes are known (open question §7).
 - **W4 — True dry-run diffs** (Epic 3 / FR3). **Done.** With a reader configured, `request()` fetches the record's current ERP state and derives the diff (`render_diff`) — the caller's asserted preview is ignored; a failed fetch dead-letters the proposal (fail closed) rather than recording a fabricated diff.
-- **W5 — Partner record-type mappings** (Epic 2 / FR2). Mapping tables for the reference implementation, in priority order: lot-numbered inventory item, inventory adjustment, transfer order; missing required ERP fields block the write with a surfaced gap.
-- **W6 — Reconciliation and drift** (Epic 4 / FR6). Scheduled (Ticker) comparison of Cavi state vs ERP state (Ledger), advisory-only drift flags surfaced by Beacon — a human disposes, never an automatic correction.
+- **W5 — Partner record-type mappings** (Epic 2 / FR2). **Done (reference tables).** `agents/mapper/netsuite_records.py`: declarative mappings for lot-numbered inventory item, inventory adjustment, and transfer order, registered on the Mapper ERP transformer. Missing required fields block with *every* gap surfaced at once (line-level included); an undeclared Cavi field blocks rather than silently drops — every field maps or is explicitly declared unmapped. Remaining for the Epic 2 gate: partner sign-off on the mapping table, custom fields, and chart-of-accounts targets (§7).
+- **W6 — Reconciliation and drift** (Epic 4 / FR6). **Done (platform).** n8n `reconciliation-cadence` publishes `ticker.reconciliation.due` on the drift window (NFR4 knob); `LedgerReconcileAgent` compares expected vs actual by external id (managed fields only), always emits the `ledger.reconciliation.completed` heartbeat, and emits `ledger.drift.detected` on discrepancies — surfaced by Beacon as an advisory WARNING a human disposes. Unconfigured or failing state sources dead-letter the due event (fail closed). Remaining for the Epic 4 gate: production state sources (event_log projection + NetSuite bulk query) and the partner's reconciliation scope/window.
 - **W7 — Hash-chained audit log** (Epic 5 / FR7). `prev_hash` chaining on `event_log` writes plus an export and a chain-verification tool.
 - **W8 — Reversal / compensating writes** (Epic 5 / FR8). Reversal modeled as a new `forge.write` lifecycle referencing the original `write_id`; both actions on the chain.
 - **W9 — Circuit breaker and partial-batch halt** (Epic 6 / FR9). Repeated failures trip a breaker and escalate; a partial batch halts, escalates, and leaves no unreported half-posted state.
@@ -133,8 +134,8 @@ No epic is considered done, and no downstream epic starts trusting its output, u
 - **Gate:** connection proven in a sandbox ERP with rotation and fail-closed behavior demonstrated.
 
 ### Epic 2: Schema and field mapping (Mapper)
-- Story 2.1: Map core entities (item, lot, transfer, adjustment). Acceptance: each Cavi field resolves to a defined ERP target or an explicit unmapped state; no silent drops.
-- Story 2.2: Handle custom and required ERP fields. Acceptance: a missing required field blocks the write and surfaces the gap, rather than posting a partial record.
+- Story 2.1: Map core entities (item, lot, transfer, adjustment). Acceptance: each Cavi field resolves to a defined ERP target or an explicit unmapped state; no silent drops. *(done: W5 — an undeclared field blocks the mapping)*
+- Story 2.2: Handle custom and required ERP fields. Acceptance: a missing required field blocks the write and surfaces the gap, rather than posting a partial record. *(done: W5 — all gaps surface at once, line-level included)*
 - Story 2.3: [Partner-specific chart-of-accounts / item taxonomy mapping.]
 - **Gate:** a full mapping table reviewed and signed off by the partner.
 
@@ -145,10 +146,10 @@ No epic is considered done, and no downstream epic starts trusting its output, u
 - **Gate:** end-to-end approved write into a sandbox ERP with a demonstrated safe retry.
 
 ### Epic 4: Reconciliation and drift detection (Ledger + Ticker)
-- Story 4.1: Scheduled reconciliation of Cavi vs ERP state. Acceptance: discrepancies are detected and reported within the defined window.
-- Story 4.2: Drift surfacing to a human. Acceptance: drift raises an advisory flag a human disposes, not an automatic correction.
+- Story 4.1: Scheduled reconciliation of Cavi vs ERP state. Acceptance: discrepancies are detected and reported within the defined window. *(platform done: W6 — cadence, comparator, and events; production state sources remain)*
+- Story 4.2: Drift surfacing to a human. Acceptance: drift raises an advisory flag a human disposes, not an automatic correction. *(done: W6 — `ledger.drift.detected` → Beacon WARNING; nothing auto-corrects)*
 - Story 4.3: [Partner-specific reconciliation scope, e.g. which record types.]
-- **Gate:** an injected discrepancy is detected and correctly surfaced.
+- **Gate:** an injected discrepancy is detected and correctly surfaced. *(proven in-memory for all three kinds — `tests/test_ledger_reconcile.py`; gate closes end-to-end once production state sources land)*
 
 ### Epic 5: Audit, reversibility, and observability (Beacon)
 - Story 5.1: Hash-chained write log. Acceptance: the log is tamper-evident and exportable. *(W7)*

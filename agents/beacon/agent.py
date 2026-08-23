@@ -96,6 +96,7 @@ class BeaconAgent(BaseAgent):
             "deadletter.ledger.entry",   # CRITICAL — money couldn't be parsed
             "ledger.rejected",            # WARNING  — unbalanced posting
             "vault.secret.denied",        # WARNING  — credential request refused
+            "ledger.drift.detected",      # WARNING  — Cavi and the ERP disagree
             "ledger.posted",              # INFO     — audit trail
             "forge.completed",            # INFO     — audit trail
         ]

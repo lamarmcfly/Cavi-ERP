@@ -119,6 +119,13 @@ services:
       VAULT_URL: http://vault:8080
       CAVI_VAULT_API_SECRET: ${CAVI_VAULT_API_SECRET:-dev-vault-secret}
       NETSUITE_REST_URL: ${NETSUITE_REST_URL:-}
+  # Reconciliation / drift detection: runs a Cavi-vs-ERP comparison pass when
+  # the n8n reconciliation-cadence workflow publishes ticker.reconciliation.due.
+  # Advisory only — drift is surfaced via Beacon, never auto-corrected. Without
+  # configured state sources a due event dead-letters (fail closed).
+  ledger-reconcile:
+    <<: *agent
+    command: ["python", "-m", "agents.ledger.reconcile_agent"]
   ticker:
     <<: *agent
     command: ["python", "-m", "agents.ticker.agent"]
