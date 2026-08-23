@@ -52,6 +52,34 @@ class ExplodingErpWriter:
         raise ErpWriteError("ERP rejected the write")
 
 
+class DedupingErpWriter:
+    """Simulates an ERP that honors an idempotency / external-id key.
+
+    Records at most one commit per key. The first apply for a key "commits"
+    server-side but can be told to lose its response (raise), modelling a
+    timeout where the ERP actually persisted. A retry with the same key finds
+    the existing record and returns it without committing again — so
+    ``commits`` never exceeds the number of distinct keys.
+    """
+
+    def __init__(self, *, lose_first_response: bool = False) -> None:
+        self.records: dict[str, dict] = {}
+        self.commits = 0
+        self._lose_first = lose_first_response
+
+    def apply(self, op) -> dict:
+        key = op.idempotency_key
+        if key not in self.records:
+            # First sighting of this key: the ERP commits exactly one record.
+            self.commits += 1
+            self.records[key] = {"id": f"NS-{self.commits}", "external_id": key}
+            if self._lose_first:
+                # Committed, but the response is lost in transit.
+                self._lose_first = False
+                raise ErpWriteError("timeout after commit (response lost)")
+        return dict(self.records[key])
+
+
 @pytest.fixture
 def registry() -> SchemaRegistry:
     return SchemaRegistry()
@@ -152,6 +180,35 @@ def test_erp_write_failure_leaves_write_approved_for_retry():
         coord.execute(appr.op)
     # Not advanced to COMPLETED — the approved op is unchanged and retryable.
     assert appr.op.state is WriteState.APPROVED
+
+
+# --------------------------------------------------------------------------- #
+# Idempotency (FR5) — a retry must never double-post
+# --------------------------------------------------------------------------- #
+def test_idempotency_key_is_stable_and_namespaced():
+    op = _coord().request(**REQUEST).op
+    assert op.idempotency_key == f"cavi-{FIXED_ID}"
+    # Stable across a state transition — the key rides the whole lifecycle.
+    assert op.transition_to(WriteState.APPROVED).idempotency_key == op.idempotency_key
+
+
+def test_retry_after_lost_response_does_not_double_post():
+    # The ERP commits on the first call but the response is lost, so execute()
+    # raises and the write stays APPROVED (retryable).
+    writer = DedupingErpWriter(lose_first_response=True)
+    coord = _coord(writer)
+    appr = coord.approve(coord.request(**REQUEST).op, "user:owner")
+
+    with pytest.raises(ErpWriteError):
+        coord.execute(appr.op)
+    assert appr.op.state is WriteState.APPROVED   # unchanged, ready to retry
+
+    # Retry with the *same* op → same idempotency key → the ERP returns the
+    # already-committed record instead of posting a second one.
+    comp = coord.execute(appr.op)
+    assert comp.op.state is WriteState.COMPLETED
+    assert writer.commits == 1                     # exactly one server-side commit
+    assert comp.event["erp_confirmation"]["external_id"] == f"cavi-{FIXED_ID}"
 
 
 def test_default_writer_refuses_until_configured():

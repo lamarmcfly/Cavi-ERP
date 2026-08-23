@@ -40,16 +40,16 @@ credentials/env, then toggle Active in the n8n UI.
 |----------|--------------------|------|--------|
 | `sale-to-posting.json` | `forge.completed` | Revenue recognition — derives a balanced `ledger.entry` from a completed work order | publishes `ledger.entry` |
 | `deadletter-escalation.json` | `deadletter.ledger.entry` | Escalates an unparseable financial event (CRITICAL) to a human | HTTP → Hermes gateway (Telegram) |
-| `netsuite-sync.json` | `ledger.posted` | Pushes a posted journal entry to NetSuite, getting the OAuth 1.0a `Authorization` header from Vault's `/sign` first (secrets never leave Vault) | HTTP → Vault `/sign` → HTTP → NetSuite REST |
+| `netsuite-sync.json` | `ledger.posted` | Files a **proposal** to write a posted journal entry into NetSuite — never posts directly. Turns the posting into a `forge.write.propose` that the Forge write agent holds for human approval | publishes `forge.write.propose` |
 
 ### Required credentials / env
 
 * **Redis** credential named `Cavi Redis` (host/port from `docker-compose.yml`).
 * `HERMES_WEBHOOK_URL` — gateway webhook for `deadletter-escalation`.
-* `VAULT_URL`, `NETSUITE_REST_URL` — endpoints for `netsuite-sync`. Run the
-  Vault service with `python -m agents.vault.service` (default `:8080`); it
-  exposes `POST /sign`, `POST /vend`, and `GET /healthz`. From the n8n
-  container, set `VAULT_URL=http://host.docker.internal:8080`.
+* `netsuite-sync` no longer calls Vault or NetSuite itself — it only publishes
+  a `forge.write.propose`. The Vault-signed NetSuite call now lives inside the
+  Forge write agent's ERP writer, which runs only after approval. `VAULT_URL`
+  and `NETSUITE_REST_URL` are configured for that agent, not this workflow.
 
 ### Design note — where revenue recognition lives
 
@@ -59,6 +59,31 @@ Forge from accounting (Forge would emit only `forge.completed`). The Python
 logic — keeping both means two places to change the chart of accounts. The n8n
 location is preferable when non-engineers tune the mapping; the agent location
 when it must be unit-tested and versioned with code.
+
+### Design note — the ERP write approval gate
+
+Writing into an external system of record is the highest-risk action in the
+product, so `netsuite-sync` is deliberately only the **first** step of a gated
+pipeline, not a sync:
+
+```
+ledger.posted ──(n8n)──▶ forge.write.propose
+                              │
+                         Forge records it as forge.write.requested (pending)
+                              │
+             human reviews the diff_preview in Mission Control
+                              │
+                   forge.write.decision {approve|reject}
+                              │
+        approve ─▶ Forge executes via its Vault-signed, idempotency-keyed
+                   ERP writer ─▶ forge.write.completed (carries NetSuite receipt)
+```
+
+No journal entry reaches NetSuite without a `forge.write.decision` approving it,
+and every attempt carries a stable idempotency key so an approved-then-retried
+write cannot double-post. Until a real ERP writer is wired into the Forge write
+agent, an approved write fails **closed** (the default writer refuses to run)
+rather than posting silently.
 
 ### Importing
 

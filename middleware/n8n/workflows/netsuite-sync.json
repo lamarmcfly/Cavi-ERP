@@ -21,53 +21,35 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{ $env.VAULT_URL }}/sign",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "X-Cavi-Vault-Secret", "value": "={{ $env.CAVI_VAULT_API_SECRET }}" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ tenant_id: ($json.payload && $json.payload.tenant_id) || 'tenant-acme', erp_platform: 'netsuite', method: 'POST', url: $env.NETSUITE_REST_URL + '/record/v1/journalEntry' }) }}",
-        "options": {}
+        "mode": "runOnceForEachItem",
+        "jsCode": "// NetSuite write-back — PROPOSAL stage only.\n//\n// A posted journal entry does NOT go straight to NetSuite: writing into the\n// system of record is gated on human approval. This node turns ledger.posted\n// into a forge.write.propose envelope that the Forge write agent records as a\n// pending proposal (forge.write.requested). Nothing reaches NetSuite until a\n// reviewer publishes forge.write.decision{decision:'approve'}, at which point\n// Forge executes it through its Vault-signed, idempotency-keyed ERP writer.\n//\n// This node intentionally performs NO ERP call. Removing the direct POST is\n// what closes the approval-gate bypass (PRD FR4 / W1).\nconst evt = $json;\nconst e = evt.payload ?? evt;\n\nconst amount = (e.amount_minor ?? 0) / 100;\nconst diff_preview = `+ NetSuite journalEntry for ledger entry ${e.entry_id ?? '?'} `\n  + `(${e.currency ?? ''} ${amount.toFixed(2)})`;\n\nreturn {\n  json: {\n    subject: 'forge.write.propose',\n    schema_version: 1,\n    source: 'n8n:netsuite-sync',\n    correlation_id: evt.correlation_id ?? null,\n    payload: {\n      tenant_id: e.tenant_id ?? 'tenant-acme',\n      erp_platform: 'netsuite',\n      operation: 'create',\n      target_module: 'journalEntry',\n      payload: e,\n      requested_by: 'n8n:netsuite-sync',\n      diff_preview,\n    },\n  },\n};"
       },
-      "id": "http-vault-sign",
-      "name": "Sign NetSuite request (Vault)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
+      "id": "fn-build-proposal",
+      "name": "Build forge.write.propose",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [520, 300]
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{ $env.NETSUITE_REST_URL }}/record/v1/journalEntry",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "Authorization", "value": "={{ $json.authorization_header }}" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($('On ledger.posted').item.json.payload) }}",
-        "options": {}
+        "operation": "publish",
+        "channel": "forge.write.propose",
+        "messageData": "={{ JSON.stringify($json) }}"
       },
-      "id": "http-netsuite",
-      "name": "POST to NetSuite",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [800, 300]
+      "id": "pub-forge-write-propose",
+      "name": "Publish forge.write.propose",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [800, 300],
+      "credentials": { "redis": { "id": "cavi-redis", "name": "Cavi Redis" } }
     }
   ],
   "connections": {
     "On ledger.posted": {
-      "main": [[{ "node": "Sign NetSuite request (Vault)", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Build forge.write.propose", "type": "main", "index": 0 }]]
     },
-    "Sign NetSuite request (Vault)": {
-      "main": [[{ "node": "POST to NetSuite", "type": "main", "index": 0 }]]
+    "Build forge.write.propose": {
+      "main": [[{ "node": "Publish forge.write.propose", "type": "main", "index": 0 }]]
     }
   }
 }

@@ -68,6 +68,20 @@ class WriteOperation:
     diff_preview: str
     state: WriteState = WriteState.REQUESTED
 
+    @property
+    def idempotency_key(self) -> str:
+        """Stable key the writer MUST hand the ERP as its idempotency /
+        external id, so a retry of the *same* write can never double-post.
+
+        Derived from `write_id`, which is minted once per write and unchanged
+        across retries, and namespaced so it never collides with an id space
+        the ERP already uses. A failed `execute()` leaves the op APPROVED and
+        retryable (see `WriteCoordinator.execute`); every retry therefore
+        presents this identical key, and an ERP that honors it dedupes the
+        commit to exactly one record.
+        """
+        return f"cavi-{self.write_id}"
+
     def transition_to(self, new_state: WriteState) -> "WriteOperation":
         if new_state not in _ALLOWED[self.state]:
             raise InvalidTransition(
@@ -79,7 +93,14 @@ class WriteOperation:
 class ErpWriter(Protocol):
     """How an approved write is applied to the ERP. Injected so the lifecycle is
     testable without a live ERP. Returns the ERP's confirmation record (ids,
-    revision, receipt), which rides on `forge.write.completed`."""
+    revision, receipt), which rides on `forge.write.completed`.
+
+    Contract: an implementation MUST send ``op.idempotency_key`` to the ERP as
+    its idempotency / external-id so a retried write (after a lost response or a
+    transient failure) is deduped to a single commit by the ERP. The default
+    ``UnconfiguredErpWriter`` refuses to run at all; a real writer (e.g.
+    NetSuite) sets the external id from this key on every request.
+    """
 
     def apply(self, op: "WriteOperation") -> dict: ...
 
