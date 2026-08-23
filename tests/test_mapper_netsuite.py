@@ -143,6 +143,13 @@ def test_line_level_gaps_surface_with_their_index():
     assert "lines[1].mystery has no NetSuite target (undeclared)" in exc.value.gaps
 
 
+def test_non_integer_money_blocks_instead_of_coercing():
+    # Money is integer minor units, full stop — a float (or "14.99" string)
+    # upstream is a bug to surface, not a value to round.
+    with pytest.raises(ErpTransformError, match="integer minor units"):
+        ITEM.apply({**ITEM_RECORD, "unit_price_minor": 14.99})
+
+
 def test_empty_lines_block():
     record = {**TRANSFER_RECORD, "lines": []}
     with pytest.raises(MappingBlocked, match="lines is required"):

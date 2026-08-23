@@ -57,7 +57,10 @@ def _fetch_chained() -> list[dict]:
             "       tenant_id, payload, chain_hash, created_at "
             "FROM event_log WHERE chain_hash IS NOT NULL ORDER BY seq"
         )
-        columns = [c.name for c in cursor.description]
+        description = cursor.description
+        if description is None:  # a SELECT always has one; satisfies typing
+            return []
+        columns = [c.name for c in description]
         return [dict(zip(columns, values)) for values in cursor.fetchall()]
 
 

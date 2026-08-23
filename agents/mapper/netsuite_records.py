@@ -43,8 +43,14 @@ class MappingBlocked(ErpTransformError):
 
 
 def _minor_to_major(value: object) -> str:
-    """Integer minor units -> decimal-string major units (money never floats)."""
-    return str(Decimal(int(value)) / 100)
+    """Integer minor units -> decimal-string major units (money never floats).
+    Anything but an int (a float, a "14.99" string) blocks the mapping — money
+    that isn't integer minor units is a bug upstream, not something to coerce."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ErpTransformError(
+            f"unit_price_minor must be integer minor units, got {value!r}"
+        )
+    return str(Decimal(value) / 100)
 
 
 @dataclass(frozen=True)
