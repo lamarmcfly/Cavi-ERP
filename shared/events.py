@@ -17,6 +17,13 @@ recorded event's ``chain_hash`` covers the previous event's hash plus its own
 canonical content, making the log tamper-evident, not merely append-only.
 Postgres serializes chain writes with a transaction-scoped advisory lock so
 concurrent agents cannot fork the chain.
+
+The chain covers the envelope **as persisted** (`chain_envelope`), not the
+in-flight object: ``correlation_id`` is a UUID column, so a free-form
+correlation string persists as NULL — hashing the original string would make
+`audit_export --verify` flag every such event as tampered when it re-reads
+the stored row. Both stores hash the same normalized form so their chains
+agree.
 """
 from __future__ import annotations
 
@@ -35,6 +42,18 @@ class EventStore(Protocol):
     def record_deadletter(self, envelope: Mapping) -> None: ...
 
 
+def chain_envelope(event: Event) -> dict:
+    """The event envelope exactly as the audit store persists it — the form
+    the hash chain covers. ``correlation_id`` is normalized the way the UUID
+    column stores it (a non-UUID correlation persists as NULL), so verifying
+    an export against the stored rows always reproduces the recorded hashes."""
+    correlation = _as_uuid(event.correlation_id)
+    return {
+        **event.to_dict(),
+        "correlation_id": str(correlation) if correlation else None,
+    }
+
+
 class InMemoryEventStore:
     """Volatile store for tests. Idempotent on event id, mirroring Postgres —
     including the hash chain (`chain_hashes[i]` covers `events[i]`)."""
@@ -51,7 +70,7 @@ class InMemoryEventStore:
             return
         self._event_ids.add(event.id)
         prev = self.chain_hashes[-1] if self.chain_hashes else GENESIS_HASH
-        self.chain_hashes.append(chain_hash(prev, event.to_dict()))
+        self.chain_hashes.append(chain_hash(prev, chain_envelope(event)))
         self.events.append(event)
 
     def record_deadletter(self, envelope: Mapping) -> None:
@@ -106,7 +125,7 @@ class PostgresEventStore:
                     _as_uuid(event.correlation_id),
                     event.tenant_id,
                     Json(event.payload),
-                    chain_hash(prev, event.to_dict()),
+                    chain_hash(prev, chain_envelope(event)),
                 ),
             )
 

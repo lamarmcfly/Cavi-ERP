@@ -78,6 +78,13 @@ class WriteOperation:
     # its own (request -> approval -> execute), so the reversal itself is
     # approved and audited; this field is the audit link between the two.
     reverses: str | None = None
+    # For an update: the ERP external id of the *existing* record this write
+    # modifies (e.g. the creating write's idempotency key, "cavi-<write_id>").
+    # None for a create. This is deliberately separate from `idempotency_key`:
+    # that key is minted fresh per write for retry-dedup, so it can never
+    # address a pre-existing record — an update routed by it would upsert a
+    # duplicate instead of modifying the target.
+    target_external_id: str | None = None
 
     @property
     def idempotency_key(self) -> str:
@@ -92,6 +99,14 @@ class WriteOperation:
         commit to exactly one record.
         """
         return f"cavi-{self.write_id}"
+
+    @property
+    def erp_address(self) -> str:
+        """The external id this write is addressed to in the ERP: the existing
+        record's id for an update, this write's own idempotency key for a
+        create. The dry-run reader and the writer MUST both use this, so the
+        diff a human approves describes the same record the write will touch."""
+        return self.target_external_id or self.idempotency_key
 
     def transition_to(self, new_state: WriteState) -> "WriteOperation":
         if new_state not in _ALLOWED[self.state]:
@@ -158,7 +173,7 @@ def render_diff(before: Mapping | None, op: "WriteOperation") -> str:
     exists = before is not None
     current: Mapping = before or {}
     header = (
-        f"{op.erp_platform} {op.target_module} eid {op.idempotency_key} — "
+        f"{op.erp_platform} {op.target_module} eid {op.erp_address} — "
         f"{op.operation} ({'updates existing record' if exists else 'no existing record'})"
     )
     lines: list[str] = []
@@ -186,8 +201,9 @@ def _new_write_id() -> str:
 # Canonical payload builders (pure)
 # --------------------------------------------------------------------------- #
 def requested_payload(op: WriteOperation, *, requested_at: str) -> dict:
-    # forge.write.requested v2: `reverses` is always present (null for an
-    # ordinary write) — the canonical contracts have no optional fields.
+    # forge.write.requested v3: `reverses` and `target_external_id` are always
+    # present (null when not applicable) — canonical contracts have no
+    # optional fields.
     return {
         "tenant_id": op.tenant_id,
         "erp_platform": op.erp_platform,
@@ -198,6 +214,7 @@ def requested_payload(op: WriteOperation, *, requested_at: str) -> dict:
         "requested_at": requested_at,
         "diff_preview": op.diff_preview,
         "reverses": op.reverses,
+        "target_external_id": op.target_external_id,
     }
 
 
@@ -298,6 +315,7 @@ class WriteCoordinator:
         requested_by: str,
         diff_preview: str | None = None,
         reverses: str | None = None,
+        target_external_id: str | None = None,
     ) -> WriteStep:
         op = WriteOperation(
             write_id=self._id(),
@@ -309,6 +327,7 @@ class WriteCoordinator:
             requested_by=requested_by,
             diff_preview="",
             reverses=reverses,
+            target_external_id=target_external_id,
         )
         # With a reader configured the preview is *derived* from current ERP
         # state — a caller-supplied string is ignored so the reviewer never
@@ -323,7 +342,7 @@ class WriteCoordinator:
             op,
             "forge.write.requested",
             requested_payload(op, requested_at=self._clock()),
-            schema_version=2,
+            schema_version=3,
         )
 
     def request_reversal(
@@ -334,6 +353,7 @@ class WriteCoordinator:
         payload: Mapping,
         requested_by: str,
         diff_preview: str | None = None,
+        target_external_id: str | None = None,
     ) -> WriteStep:
         """Propose a compensating write for a COMPLETED write.
 
@@ -350,6 +370,9 @@ class WriteCoordinator:
                 f"write {original.write_id}: cannot reverse from "
                 f"{original.state.value} (only a completed write is reversible)"
             )
+        # An update-style compensation (e.g. a void) targets the record the
+        # original write touched; a create-style one (a reversing entry) makes
+        # a new record and passes no target.
         return self.request(
             tenant_id=original.tenant_id,
             erp_platform=original.erp_platform,
@@ -359,6 +382,7 @@ class WriteCoordinator:
             requested_by=requested_by,
             diff_preview=diff_preview,
             reverses=original.write_id,
+            target_external_id=target_external_id,
         )
 
     def approve(self, op: WriteOperation, approved_by: str) -> WriteStep:

@@ -12,7 +12,7 @@ from __future__ import annotations
 from agents.base.contract import Event
 from scripts.audit_export import export_row, verify_export
 from shared.audit import GENESIS_HASH, chain_hash, verify_chain
-from shared.events import InMemoryEventStore
+from shared.events import InMemoryEventStore, chain_envelope
 
 
 def _event(n: int) -> Event:
@@ -34,7 +34,11 @@ def _store_with(n: int) -> InMemoryEventStore:
 
 
 def _entries(store: InMemoryEventStore) -> list[tuple[dict, str]]:
-    return [(e.to_dict(), h) for e, h in zip(store.events, store.chain_hashes)]
+    # The chain covers the envelope AS PERSISTED (chain_envelope), matching
+    # what audit_export reads back from the database.
+    return [
+        (chain_envelope(e), h) for e, h in zip(store.events, store.chain_hashes)
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -66,6 +70,38 @@ def test_redelivered_event_does_not_extend_or_fork_the_chain():
     store.record_event(_event(0))   # at-least-once redelivery
     assert len(store.events) == 2 and len(store.chain_hashes) == 2
     assert verify_chain(_entries(store)) == []
+
+
+def test_free_form_correlation_id_still_verifies_after_export(  # Codex P2
+):
+    # correlation_id is a UUID column: a free-form value like "corr-1"
+    # persists as NULL. The chain must cover the PERSISTED form, or an export
+    # of an untampered log would verify as broken.
+    store = InMemoryEventStore()
+    event = Event(
+        subject="forge.completed", schema_version=1, source="forge",
+        payload={"work_order_id": "wo-1"},
+        id="00000000-0000-0000-0000-000000000009",
+        correlation_id="corr-1",              # not a UUID -> persists as NULL
+        tenant_id="tenant-acme",
+    )
+    store.record_event(event)
+    assert chain_envelope(event)["correlation_id"] is None
+    # Verifying against the persisted (exported) form is clean...
+    assert verify_chain(_entries(store)) == []
+    # ...and the recorded hash is exactly the persisted-form hash.
+    assert store.chain_hashes[0] == chain_hash(GENESIS_HASH, chain_envelope(event))
+
+
+def test_uuid_correlation_id_is_preserved_in_the_chain():
+    corr = "11111111-1111-1111-1111-111111111111"
+    event = Event(
+        subject="forge.completed", schema_version=1, source="forge",
+        payload={"work_order_id": "wo-1"},
+        id="00000000-0000-0000-0000-000000000008",
+        correlation_id=corr, tenant_id="tenant-acme",
+    )
+    assert chain_envelope(event)["correlation_id"] == corr
 
 
 # --------------------------------------------------------------------------- #

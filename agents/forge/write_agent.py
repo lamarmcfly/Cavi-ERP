@@ -13,7 +13,8 @@ the canonical `forge.write.*` events:
 
 Two W9 protections wrap execution:
 
-  * a **circuit breaker** — consecutive ERP failures trip it, after which
+  * a **circuit breaker**, scoped per (tenant, ERP) so one tenant's outage
+    never halts a healthy tenant — consecutive ERP failures trip it, after which
     executes are refused up front (writes stay APPROVED and retryable) and the
     trip itself is escalated by dead-lettering the triggering decision, so
     Beacon pages a human instead of the agent hammering a broken ERP;
@@ -34,15 +35,18 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Callable
 
 from agents.base import BaseAgent, Event
 from agents.forge.breaker import BreakerOpen, CircuitBreaker
+from agents.forge.forge import InvalidTransition
 from agents.forge.write import (
     ErpReader,
     ErpWriteError,
     ErpWriter,
     WriteCoordinator,
     WriteOperation,
+    WriteState,
     WriteStep,
 )
 from shared import metrics
@@ -59,13 +63,25 @@ class ForgeWriteAgent(BaseAgent):
         *,
         writer: ErpWriter | None = None,
         reader: ErpReader | None = None,
-        breaker: CircuitBreaker | None = None,
+        breaker_factory: Callable[[], CircuitBreaker] | None = None,
+        **base_kwargs,
     ) -> None:
-        super().__init__()
+        super().__init__(**base_kwargs)
         self.coordinator = coordinator or WriteCoordinator(writer=writer, reader=reader)
-        self.breaker = breaker or CircuitBreaker()
+        # Breakers are scoped per (tenant, ERP): credentials, rate limits, and
+        # outages are tenant-scoped, so one tenant's broken connection must
+        # never halt writes for a healthy tenant.
+        self._breaker_factory = breaker_factory or CircuitBreaker
+        self._breakers: dict[tuple[str, str], CircuitBreaker] = {}
         self._pending: dict[str, WriteOperation] = {}
         self._completed: dict[str, WriteOperation] = {}
+
+    def _breaker_for(self, op: WriteOperation) -> CircuitBreaker:
+        key = (op.tenant_id, op.erp_platform)
+        breaker = self._breakers.get(key)
+        if breaker is None:
+            breaker = self._breakers[key] = self._breaker_factory()
+        return breaker
 
     @property
     def subjects(self) -> list[str]:
@@ -128,23 +144,39 @@ class ForgeWriteAgent(BaseAgent):
             log.warning("forge.write decision for unknown write_id %s", write_id)
             return
 
-        if event.payload["decision"] == "approve":
-            approved = self.coordinator.approve(op, event.payload["reviewer"])
-            self._pending[write_id] = approved.op
-            self._emit(approved, event.correlation_id)
-            self._execute(approved.op, event, event.correlation_id)
-        else:
-            rejected = self.coordinator.reject(
-                op, event.payload["reviewer"], event.payload.get("reason", "rejected")
-            )
-            self._pending.pop(write_id, None)
-            self._emit(rejected, event.correlation_id)
+        try:
+            if event.payload["decision"] == "approve":
+                if op.state is WriteState.APPROVED:
+                    # Replay of an approval already granted — a dead-lettered
+                    # decision re-driven after an execute failure or an open
+                    # breaker. The approval stands; don't re-approve (that's an
+                    # illegal APPROVED -> APPROVED transition), just retry the
+                    # execution.
+                    self._execute(op, event, event.correlation_id)
+                    return
+                approved = self.coordinator.approve(op, event.payload["reviewer"])
+                self._pending[write_id] = approved.op
+                self._emit(approved, event.correlation_id)
+                self._execute(approved.op, event, event.correlation_id)
+            else:
+                rejected = self.coordinator.reject(
+                    op, event.payload["reviewer"], event.payload.get("reason", "rejected")
+                )
+                self._pending.pop(write_id, None)
+                self._emit(rejected, event.correlation_id)
+        except InvalidTransition as exc:
+            # Any other illegal decision (e.g. rejecting an already-approved
+            # write) is quarantined, not crashed on: the agent loop must
+            # survive a bad decision event, and a human sees it via Beacon.
+            log.error("forge.write decision rejected by state machine: %s", exc)
+            self._dead_letter(event, f"illegal decision: {exc}")
 
     def _execute(
         self, op: WriteOperation, cause: Event, correlation_id: str | None
     ) -> None:
+        breaker = self._breaker_for(op)
         try:
-            self.breaker.check()
+            breaker.check()
         except BreakerOpen as exc:
             # The write stays APPROVED and retryable; the decision event is
             # quarantined so the refusal is visible and replayable once the
@@ -161,17 +193,18 @@ class ForgeWriteAgent(BaseAgent):
             # Write stays APPROVED (retryable); do not emit completed.
             log.error("forge.write execute failed for %s: %s", op.write_id, exc)
             metrics.REGISTRY.inc(metrics.ERP_WRITE_FAILURES, reason="erp_error")
-            if self.breaker.record_failure():
+            if breaker.record_failure():
                 # Transition to OPEN — the one escalation moment (Story 6.2).
                 log.critical(
-                    "forge.write circuit breaker OPEN after repeated ERP failures"
+                    "forge.write circuit breaker OPEN for tenant %s (%s) "
+                    "after repeated ERP failures", op.tenant_id, op.erp_platform,
                 )
                 metrics.REGISTRY.inc(metrics.BREAKER_OPENS)
                 self._dead_letter(
                     cause, f"circuit breaker opened; last error: {exc}"
                 )
             return
-        self.breaker.record_success()
+        breaker.record_success()
         metrics.REGISTRY.inc(
             metrics.ERP_WRITE_SECONDS, value=time.monotonic() - started
         )

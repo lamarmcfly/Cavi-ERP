@@ -94,6 +94,15 @@ class BeaconAgent(BaseAgent):
     def subjects(self) -> list[str]:
         return [
             "deadletter.ledger.entry",   # CRITICAL — money couldn't be parsed
+            # ERP write-path failures quarantined by the Forge write agent:
+            # a failed dry-run, an illegal decision, or an open circuit
+            # breaker. These are the write path's escalation channel — if
+            # Beacon doesn't hear them, "escalates to a human" is a lie.
+            "deadletter.forge.write.propose",    # ERROR
+            "deadletter.forge.write.decision",   # ERROR (incl. breaker open)
+            "deadletter.forge.write.reverse",    # ERROR
+            # A reconciliation pass that could not run (source unavailable).
+            "deadletter.ticker.reconciliation.due",  # ERROR
             "ledger.rejected",            # WARNING  — unbalanced posting
             "vault.secret.denied",        # WARNING  — credential request refused
             "ledger.drift.detected",      # WARNING  — Cavi and the ERP disagree

@@ -106,10 +106,11 @@ def test_full_lifecycle_emits_all_canonical_events(registry: SchemaRegistry):
     comp = coord.execute(appr.op)
 
     # Each event validates against its canonical contract (also enforces
-    # additionalProperties:false). requested is v2 (adds `reverses`); the
-    # step carries its schema version so the runtime emits the right one.
-    assert (req.schema_version, appr.schema_version, comp.schema_version) == (2, 1, 1)
-    registry.validate("forge.write.requested", 2, req.event)
+    # additionalProperties:false). requested is v3 (adds `reverses` and
+    # `target_external_id`); the step carries its schema version so the
+    # runtime emits the right one.
+    assert (req.schema_version, appr.schema_version, comp.schema_version) == (3, 1, 1)
+    registry.validate("forge.write.requested", 3, req.event)
     registry.validate("forge.write.approved", 1, appr.event)
     registry.validate("forge.write.completed", 1, comp.event)
 
@@ -129,15 +130,17 @@ def test_full_lifecycle_emits_all_canonical_events(registry: SchemaRegistry):
 
 def test_requested_event_carries_the_full_proposal(registry: SchemaRegistry):
     req = _coord().request(**REQUEST)
-    registry.validate("forge.write.requested", 2, req.event)
+    registry.validate("forge.write.requested", 3, req.event)
     assert set(req.event) == {
         "tenant_id", "erp_platform", "operation", "target_module",
         "payload", "requested_by", "requested_at", "diff_preview", "reverses",
+        "target_external_id",
     }
     assert req.event["payload"] == {"customer": "ACME", "total_minor": 10_000}
     assert req.event["diff_preview"] == "+ SalesOrder ACME $100.00"
     assert req.event["requested_at"] == FIXED_TS
     assert req.event["reverses"] is None   # ordinary write, not a compensation
+    assert req.event["target_external_id"] is None   # create: no existing target
 
 
 def test_reject_emits_canonical_rejected(registry: SchemaRegistry):
@@ -219,7 +222,7 @@ def test_derived_diff_for_a_create(registry: SchemaRegistry):
     reader = StubErpReader(record=None)   # record does not exist yet
     req = _coord_with_reader(reader).request(**REQUEST)
 
-    registry.validate("forge.write.requested", 2, req.event)
+    registry.validate("forge.write.requested", 3, req.event)
     diff = req.event["diff_preview"]
     # Header names exactly what will be touched, keyed by the idempotency key.
     assert diff.splitlines()[0] == (
@@ -270,7 +273,7 @@ def test_dry_run_fetch_failure_fails_closed():
 def test_no_reader_and_no_preview_yields_explicit_placeholder(registry: SchemaRegistry):
     request = {k: v for k, v in REQUEST.items() if k != "diff_preview"}
     req = _coord().request(**request)
-    registry.validate("forge.write.requested", 2, req.event)
+    registry.validate("forge.write.requested", 3, req.event)
     assert req.event["diff_preview"] == NO_DRY_RUN_PREVIEW
 
 
@@ -326,7 +329,7 @@ def test_reversal_is_a_new_gated_lifecycle_linked_to_the_original(
         requested_by="user:owner",
         diff_preview="- reverse SalesOrder ACME",
     )
-    registry.validate("forge.write.requested", 2, rev.event)
+    registry.validate("forge.write.requested", 3, rev.event)
     # A new lifecycle: fresh write_id, linked to the original via `reverses`.
     assert rev.op.write_id == "w_rev" and rev.op.reverses == "w_orig"
     assert rev.event["reverses"] == "w_orig"
@@ -351,14 +354,50 @@ def test_only_a_completed_write_can_be_reversed():
         )
 
 
-def test_v1_requested_events_coerce_to_v2(registry: SchemaRegistry):
-    from agents.mapper.transforms import forge_write_requested_v1_to_v2
+def test_v1_requested_events_coerce_through_the_version_chain(
+    registry: SchemaRegistry,
+):
+    from agents.mapper.transforms import (
+        forge_write_requested_v1_to_v2,
+        forge_write_requested_v2_to_v3,
+    )
 
-    v1_event = {k: v for k, v in _coord().request(**REQUEST).event.items()
-                if k != "reverses"}
+    v1_event = {
+        k: v for k, v in _coord().request(**REQUEST).event.items()
+        if k not in ("reverses", "target_external_id")
+    }
     v2_event = forge_write_requested_v1_to_v2(v1_event)
     registry.validate("forge.write.requested", 2, v2_event)
-    assert v2_event["reverses"] is None
+    v3_event = forge_write_requested_v2_to_v3(v2_event)
+    registry.validate("forge.write.requested", 3, v3_event)
+    assert v3_event["reverses"] is None and v3_event["target_external_id"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Update addressing (Codex P1) — an update targets the EXISTING record
+# --------------------------------------------------------------------------- #
+def test_update_is_addressed_to_the_target_not_its_own_key():
+    reader = StubErpReader(record={"customer": "ACME", "total_minor": 5_000})
+    coord = WriteCoordinator(
+        writer=StubErpWriter(), reader=reader,
+        clock=lambda: FIXED_TS, id_factory=lambda: FIXED_ID,
+    )
+    req = coord.request(
+        **{**REQUEST, "operation": "update"}, target_external_id="cavi-w_orig"
+    )
+    # The op is addressed to the existing record, while its retry-dedup key
+    # stays its own — the two identities never collapse into one.
+    assert req.op.erp_address == "cavi-w_orig"
+    assert req.op.idempotency_key == f"cavi-{FIXED_ID}"
+    assert req.event["target_external_id"] == "cavi-w_orig"
+    # The dry-run diff header names the record the write will actually touch.
+    assert "eid cavi-w_orig" in req.event["diff_preview"]
+
+
+def test_create_is_addressed_by_its_own_idempotency_key():
+    op = _coord().request(**REQUEST).op
+    assert op.target_external_id is None
+    assert op.erp_address == op.idempotency_key
 
 
 # --------------------------------------------------------------------------- #

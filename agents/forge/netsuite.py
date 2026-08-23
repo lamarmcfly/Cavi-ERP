@@ -12,11 +12,13 @@ its jobs are built around the write-back governance rules:
     stays APPROVED and retryable upstream.
 
   * **Idempotent by construction.** All writes go to NetSuite's external-id
-    upsert endpoint — ``PUT /record/v1/{module}/eid:{idempotency_key}`` — so
-    the ERP itself dedupes on ``op.idempotency_key``: a retry after a lost
-    response converges on the same single record instead of double-posting.
-    Only ``create`` and ``update`` are supported (both are the same upsert);
-    any other operation is refused rather than guessed at.
+    upsert endpoint — ``PUT /record/v1/{module}/eid:{op.erp_address}`` — a
+    create is keyed by its own ``idempotency_key`` (so a retry after a lost
+    response converges on the same single record), and an update is addressed
+    by ``target_external_id``, the *existing* record's id (a repeated PUT of
+    the same body is idempotent by construction). An update without a target,
+    a create with one, or any other operation is refused rather than guessed
+    at.
 
   * **Dry-run reads the same record the write will touch.** `fetch` GETs
     ``/record/v1/{module}/eid:{key}``; a 404 means "does not exist yet"
@@ -126,7 +128,12 @@ class NetSuiteClient:
 
     # --- record addressing ---------------------------------------------------
     def _record_url(self, op: WriteOperation) -> str:
-        return f"{self._base}/record/v1/{op.target_module}/eid:{op.idempotency_key}"
+        """The external-id endpoint for the record this write addresses: the
+        existing record's id for an update, the write's own idempotency key for
+        a create (`op.erp_address`). Retries stay safe either way — the create
+        key is stable across retries, and a repeated update PUT to the same
+        record is idempotent by construction."""
+        return f"{self._base}/record/v1/{op.target_module}/eid:{op.erp_address}"
 
     # --- ErpWriter -----------------------------------------------------------
     def apply(self, op: WriteOperation) -> dict:
@@ -135,6 +142,21 @@ class NetSuiteClient:
             raise ErpWriteError(
                 f"unsupported NetSuite operation {op.operation!r}; "
                 "only create/update (external-id upsert) are implemented"
+            )
+        # Addressing must be coherent with the verb, or we refuse: an update
+        # without a target would upsert a duplicate under a fresh external id
+        # instead of modifying the intended record; a create with a target is
+        # ambiguous about which record the reviewer actually approved.
+        if op.operation == "update" and op.target_external_id is None:
+            raise ErpWriteError(
+                f"update of {op.target_module} refused: no target_external_id — "
+                "cannot address the existing record"
+            )
+        if op.operation == "create" and op.target_external_id is not None:
+            raise ErpWriteError(
+                f"create of {op.target_module} refused: target_external_id "
+                f"{op.target_external_id!r} set — a create addresses its own "
+                "idempotency key; use operation 'update' to modify that record"
             )
         url = self._record_url(op)
         authorization = self._sign(op, "PUT", url)
@@ -154,15 +176,15 @@ class NetSuiteClient:
         if not (200 <= response.status_code < 300):
             raise ErpWriteError(
                 f"netsuite rejected {op.operation} {op.target_module} "
-                f"eid:{op.idempotency_key}: HTTP {response.status_code} "
+                f"eid:{op.erp_address}: HTTP {response.status_code} "
                 f"{_error_of(response)}"
             )
         log.info(
             "netsuite upsert ok: %s eid:%s HTTP %d",
-            op.target_module, op.idempotency_key, response.status_code,
+            op.target_module, op.erp_address, response.status_code,
         )
         confirmation: dict = {
-            "external_id": op.idempotency_key,
+            "external_id": op.erp_address,
             "status_code": response.status_code,
         }
         location = response.headers.get("Location")
@@ -188,13 +210,13 @@ class NetSuiteClient:
             return None  # does not exist yet — this write would create it
         if not (200 <= response.status_code < 300):
             raise ErpWriteError(
-                f"netsuite fetch of {op.target_module} eid:{op.idempotency_key} "
+                f"netsuite fetch of {op.target_module} eid:{op.erp_address} "
                 f"failed: HTTP {response.status_code} {_error_of(response)}"
             )
         body = _json_of(response)
         if body is None:
             raise ErpWriteError(
-                f"netsuite fetch of {op.target_module} eid:{op.idempotency_key} "
+                f"netsuite fetch of {op.target_module} eid:{op.erp_address} "
                 "returned a non-JSON body"
             )
         return body

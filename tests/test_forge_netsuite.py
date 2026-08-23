@@ -24,7 +24,11 @@ SECRET = "test-vault-secret"
 SIGNED = "OAuth realm=\"ACCT\", oauth_signature=\"abc\""
 
 
-def _op(operation: str = "create", state: WriteState = WriteState.APPROVED) -> WriteOperation:
+def _op(
+    operation: str = "create",
+    state: WriteState = WriteState.APPROVED,
+    target_external_id: str | None = None,
+) -> WriteOperation:
     return WriteOperation(
         write_id="w1",
         tenant_id="tenant-acme",
@@ -35,6 +39,7 @@ def _op(operation: str = "create", state: WriteState = WriteState.APPROVED) -> W
         requested_by="agent:forge",
         diff_preview="",
         state=state,
+        target_external_id=target_external_id,
     )
 
 
@@ -102,12 +107,41 @@ def test_apply_signs_via_vault_then_upserts_by_external_id():
     assert confirmation["location"].endswith("/journalEntry/123")
 
 
-def test_apply_confirmation_carries_a_json_record_body():
+def test_update_is_addressed_to_the_existing_record_and_confirms_it():
     transport = StubTransport(
-        _sign_ok(), httpx.Response(200, json={"id": "123", "externalId": "cavi-w1"})
+        _sign_ok(), httpx.Response(200, json={"id": "123", "externalId": "cavi-w0"})
     )
-    confirmation = _client(transport).apply(_op(operation="update"))
-    assert confirmation["record"] == {"id": "123", "externalId": "cavi-w1"}
+    confirmation = _client(transport).apply(
+        _op(operation="update", target_external_id="cavi-w0")
+    )
+    # The PUT goes to the TARGET record's external id — never to the fresh
+    # write's own key, which cannot identify a pre-existing record.
+    method, url, _ = transport.calls[1]
+    assert (method, url) == ("PUT", f"{BASE}/record/v1/journalEntry/eid:cavi-w0")
+    assert confirmation["external_id"] == "cavi-w0"
+    assert confirmation["record"] == {"id": "123", "externalId": "cavi-w0"}
+
+
+def test_update_without_a_target_is_refused_before_any_network_io():
+    transport = StubTransport()
+    with pytest.raises(ErpWriteError, match="no target_external_id"):
+        _client(transport).apply(_op(operation="update"))
+    assert transport.calls == []
+
+
+def test_create_with_a_target_is_refused_as_ambiguous():
+    transport = StubTransport()
+    with pytest.raises(ErpWriteError, match="create .* refused"):
+        _client(transport).apply(_op(operation="create", target_external_id="cavi-w0"))
+    assert transport.calls == []
+
+
+def test_dry_run_fetch_reads_the_update_target():
+    transport = StubTransport(_sign_ok(), httpx.Response(200, json={"memo": "old"}))
+    record = _client(transport).fetch(_op(operation="update", target_external_id="cavi-w0"))
+    assert record == {"memo": "old"}
+    _, url, _ = transport.calls[1]
+    assert url.endswith("/journalEntry/eid:cavi-w0")
 
 
 def test_vault_refusal_fails_closed_before_any_erp_call():
