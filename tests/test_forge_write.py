@@ -15,6 +15,7 @@ import pytest
 from agents.base.registry import SchemaRegistry
 from agents.forge.forge import InvalidTransition
 from agents.forge.write import (
+    NO_DRY_RUN_PREVIEW,
     ErpWriteError,
     UnconfiguredErpWriter,
     WriteCoordinator,
@@ -180,6 +181,94 @@ def test_erp_write_failure_leaves_write_approved_for_retry():
         coord.execute(appr.op)
     # Not advanced to COMPLETED — the approved op is unchanged and retryable.
     assert appr.op.state is WriteState.APPROVED
+
+
+# --------------------------------------------------------------------------- #
+# Dry-run diffs (FR3) — the preview is derived from current ERP state
+# --------------------------------------------------------------------------- #
+class StubErpReader:
+    """Returns a canned current-state record (None = record does not exist)."""
+
+    def __init__(self, record: dict | None = None) -> None:
+        self.record = record
+        self.calls: list = []
+
+    def fetch(self, op):
+        self.calls.append(op)
+        return self.record
+
+
+class ExplodingErpReader:
+    def fetch(self, op):
+        raise ErpWriteError("ERP unreachable during dry-run")
+
+
+def _coord_with_reader(reader) -> WriteCoordinator:
+    return WriteCoordinator(
+        writer=StubErpWriter(),
+        reader=reader,
+        clock=lambda: FIXED_TS,
+        id_factory=lambda: FIXED_ID,
+    )
+
+
+def test_derived_diff_for_a_create(registry: SchemaRegistry):
+    reader = StubErpReader(record=None)   # record does not exist yet
+    req = _coord_with_reader(reader).request(**REQUEST)
+
+    registry.validate("forge.write.requested", 1, req.event)
+    diff = req.event["diff_preview"]
+    # Header names exactly what will be touched, keyed by the idempotency key.
+    assert diff.splitlines()[0] == (
+        f"netsuite SalesOrder eid cavi-{FIXED_ID} — create (no existing record)"
+    )
+    # Every payload field appears as an addition.
+    assert '+ customer: "ACME"' in diff
+    assert "+ total_minor: 10000" in diff
+    # The reader was consulted for this exact operation.
+    assert [op.write_id for op in reader.calls] == [FIXED_ID]
+
+
+def test_derived_diff_for_an_update_shows_only_changes():
+    reader = StubErpReader(
+        record={"customer": "ACME", "total_minor": 5_000, "status": "open"}
+    )
+    req = _coord_with_reader(reader).request(**REQUEST)
+
+    diff = req.event["diff_preview"]
+    assert "updates existing record" in diff.splitlines()[0]
+    # Changed field: old value out, new value in.
+    assert "- total_minor: 5000" in diff
+    assert "+ total_minor: 10000" in diff
+    # Unchanged field is not noise; untouched ERP-only field is not a removal.
+    assert "customer" not in diff.replace(diff.splitlines()[0], "")
+    assert "status" not in diff
+
+
+def test_derived_diff_when_record_already_matches():
+    reader = StubErpReader(record={"customer": "ACME", "total_minor": 10_000})
+    diff = _coord_with_reader(reader).request(**REQUEST).event["diff_preview"]
+    assert "(no field changes" in diff
+
+
+def test_derived_diff_overrides_a_caller_supplied_preview():
+    # The requester's asserted string never reaches the reviewer when a reader
+    # is configured — the computed diff wins.
+    req = _coord_with_reader(StubErpReader()).request(**REQUEST)
+    assert req.event["diff_preview"] != REQUEST["diff_preview"]
+    assert req.event["diff_preview"].startswith("netsuite SalesOrder eid ")
+
+
+def test_dry_run_fetch_failure_fails_closed():
+    with pytest.raises(ErpWriteError):
+        _coord_with_reader(ExplodingErpReader()).request(**REQUEST)
+
+
+def test_no_reader_and_no_preview_yields_explicit_placeholder(registry: SchemaRegistry):
+    request = {k: v for k, v in REQUEST.items() if k != "diff_preview"}
+    req = _coord().request(**request)
+    registry.validate("forge.write.requested", 1, req.event)
+    assert req.event["diff_preview"] == NO_DRY_RUN_PREVIEW
 
 
 # --------------------------------------------------------------------------- #

@@ -93,15 +93,15 @@ Audit of the repository at the time of this PRD. Epics in Section 6 build on thi
 - Mapper: `(source_schema, target_schema)` ERP transforms with stable `input_hash` fingerprints; unregistered mappings surface as explicit `mapper.transform.failed` events.
 - Ledger: balanced double-entry postings with inbound `entry_id` idempotency; tenant isolation enforced (NOT NULL `tenant_id`, migration 0003).
 - Durable `event_log` (source of truth) and `event_deadletter` with Beacon as the dead-letter sink; fleet-wide Redis-backed alert dedup; structured JSON logs, metrics, and health endpoints; tracked migrations with rollback; hardened packaging (non-root image, compose, k8s).
-- n8n routing with a working `netsuite-sync` workflow: Vault-signed POST to NetSuite REST.
+- n8n routing with a `netsuite-sync` workflow that files write **proposals** (`forge.write.propose`) from `ledger.posted`; the Vault-signed NetSuite call itself lives in the Forge write agent's `NetSuiteClient` and runs only after approval.
 
 **Known gaps this PRD exists to close**
 1. ~~**The live `netsuite-sync` workflow bypasses the approval gate.**~~ **Closed (W1).** The workflow now files a `forge.write.propose` on `ledger.posted` and performs no ERP call; nothing reaches NetSuite without a `forge.write.decision` approving it.
 2. ~~**No ERP-side idempotency.**~~ **Closed (W2).** `WriteOperation.idempotency_key` is a stable, namespaced key the writer contract requires be sent to the ERP; a lost-response retry is proven not to double-post.
-3. **Dry-run is a free-form string.** `diff_preview` is supplied by the requester; nothing computes a real before/after from ERP state.
+3. ~~**Dry-run is a free-form string.**~~ **Closed (W4).** With an `ErpReader` configured, the `diff_preview` is derived from the record's current ERP state (`render_diff`); a caller-supplied string is ignored, and a failed dry-run fetch fails closed (the propose event is dead-lettered for Beacon, never recorded with a fabricated diff).
 4. **`event_log` is durable but not hash-chained.** Auditable, not yet tamper-evident.
 5. **No reconciliation, drift detection, reversal flow, circuit breaker, or partial-batch halt.** Greenfield.
-6. **The real NetSuite `ErpWriter` is not yet wired (W3).** With W1 done, an approved write currently fails closed (default writer refuses) rather than posting — correct, but write-back is not live until W3 lands.
+6. ~~**The real NetSuite `ErpWriter` is not yet wired (W3).**~~ **Closed (W3).** `agents/forge/netsuite.py` implements both writer and reader: every request is Vault-signed (`/sign`; secrets never leave Vault), writes are external-id upserts keyed by the idempotency key so NetSuite dedupes retries, and every refusal — missing config, Vault denial, ERP rejection, transport failure, unsupported operation — fails closed. Wired into the `forge-write` compose service; sandbox validation against a live NetSuite account is the remaining Epic 1/3 gate work.
 
 ---
 
@@ -111,8 +111,8 @@ Order is by risk: governance-critical fixes to paths that exist today come first
 
 - **W1 — Route ERP writes through the approval gate** (Epic 3 / FR4). **Done.** `netsuite-sync` now turns `ledger.posted` into a `forge.write.propose` (with diff preview); execution happens only after `forge.write.decision` approves, via the Forge write agent. The direct-post path is retired.
 - **W2 — ERP-side idempotency keys** (Epic 3 / FR5). **Done.** `WriteOperation.idempotency_key` (`cavi-{write_id}`, stable across retries) is required by the `ErpWriter` contract; `test_retry_after_lost_response_does_not_double_post` proves exactly-once against an ERP that honors the key.
-- **W3 — Real NetSuite `ErpWriter`** (Epics 1, 3). Production writer replacing `UnconfiguredErpWriter`: Vault `/sign` integration, NetSuite REST, governance-unit and rate-limit aware, fail-closed on auth errors.
-- **W4 — True dry-run diffs** (Epic 3 / FR3). Fetch current ERP record state, compute before/after, attach a structured diff to `forge.write.requested`; free-form `diff_preview` becomes derived, not asserted.
+- **W3 — Real NetSuite `ErpWriter`** (Epics 1, 3). **Done (code).** `NetSuiteClient` in `agents/forge/netsuite.py`: Vault `/sign` integration, external-id upsert via NetSuite REST, fail-closed on missing config / auth errors / unsupported operations; wired into the `forge-write` compose service. Remaining for the Epic 1/3 gates: sandbox validation against a live NetSuite account, and governance-unit / rate-limit budgeting once partner volumes are known (open question §7).
+- **W4 — True dry-run diffs** (Epic 3 / FR3). **Done.** With a reader configured, `request()` fetches the record's current ERP state and derives the diff (`render_diff`) — the caller's asserted preview is ignored; a failed fetch dead-letters the proposal (fail closed) rather than recording a fabricated diff.
 - **W5 — Partner record-type mappings** (Epic 2 / FR2). Mapping tables for the reference implementation, in priority order: lot-numbered inventory item, inventory adjustment, transfer order; missing required ERP fields block the write with a surfaced gap.
 - **W6 — Reconciliation and drift** (Epic 4 / FR6). Scheduled (Ticker) comparison of Cavi state vs ERP state (Ledger), advisory-only drift flags surfaced by Beacon — a human disposes, never an automatic correction.
 - **W7 — Hash-chained audit log** (Epic 5 / FR7). `prev_hash` chaining on `event_log` writes plus an export and a chain-verification tool.
@@ -139,7 +139,7 @@ No epic is considered done, and no downstream epic starts trusting its output, u
 - **Gate:** a full mapping table reviewed and signed off by the partner.
 
 ### Epic 3: Human-approved write pipeline with dry-run and idempotency (Forge + approval gate)
-- Story 3.1: Generate a dry-run diff for any proposed write. Acceptance: the human sees a computed before-and-after before commit. *(W4)*
+- Story 3.1: Generate a dry-run diff for any proposed write. Acceptance: the human sees a computed before-and-after before commit. *(done: W4)*
 - Story 3.2: Route write batches through the approval gate. Acceptance: unapproved batches never commit — including every n8n path. *(done: state machine + W1 closed the netsuite-sync bypass)*
 - Story 3.3: Apply idempotency keys to commits. Acceptance: a retried commit does not double-post; proven under forced retry against the ERP. *(done: W2)*
 - **Gate:** end-to-end approved write into a sandbox ERP with a demonstrated safe retry.

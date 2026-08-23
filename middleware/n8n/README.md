@@ -81,9 +81,13 @@ ledger.posted ──(n8n)──▶ forge.write.propose
 
 No journal entry reaches NetSuite without a `forge.write.decision` approving it,
 and every attempt carries a stable idempotency key so an approved-then-retried
-write cannot double-post. Until a real ERP writer is wired into the Forge write
-agent, an approved write fails **closed** (the default writer refuses to run)
-rather than posting silently.
+write cannot double-post: the writer upserts by external id
+(`PUT /record/v1/{module}/eid:{key}`), so NetSuite itself dedupes retries. The
+same client also serves the dry-run — the `diff_preview` a reviewer approves is
+computed against the record's *current* ERP state, never asserted by the
+proposer. When `VAULT_URL` / `CAVI_VAULT_API_SECRET` / `NETSUITE_REST_URL` are
+not configured on the Forge write agent, an approved write fails **closed**
+(the writer refuses to run) rather than posting silently.
 
 ### Importing
 

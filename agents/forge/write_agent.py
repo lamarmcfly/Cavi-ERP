@@ -22,6 +22,7 @@ import logging
 
 from agents.base import BaseAgent, Event
 from agents.forge.write import (
+    ErpReader,
     ErpWriteError,
     ErpWriter,
     WriteCoordinator,
@@ -40,9 +41,10 @@ class ForgeWriteAgent(BaseAgent):
         coordinator: WriteCoordinator | None = None,
         *,
         writer: ErpWriter | None = None,
+        reader: ErpReader | None = None,
     ) -> None:
         super().__init__()
-        self.coordinator = coordinator or WriteCoordinator(writer=writer)
+        self.coordinator = coordinator or WriteCoordinator(writer=writer, reader=reader)
         self._pending: dict[str, WriteOperation] = {}
 
     @property
@@ -57,7 +59,15 @@ class ForgeWriteAgent(BaseAgent):
 
     # --- inbound handlers ---------------------------------------------------
     def _propose(self, event: Event) -> None:
-        step = self.coordinator.request(**event.payload)
+        try:
+            step = self.coordinator.request(**event.payload)
+        except ErpWriteError as exc:
+            # Dry-run fetch failed: fail closed. No proposal is recorded with a
+            # fabricated diff — the event is quarantined for Beacon/replay so a
+            # human sees it rather than the bus dropping it silently.
+            log.error("forge.write propose failed dry-run: %s", exc)
+            self._dead_letter(event, f"dry-run failed: {exc}")
+            return
         self._pending[step.op.write_id] = step.op
         self._emit(step, event.correlation_id)
 
@@ -102,6 +112,26 @@ class ForgeWriteAgent(BaseAgent):
         )
 
 
+def build_agent() -> ForgeWriteAgent:
+    """Production wiring: the Vault-signed NetSuite client as both writer and
+    dry-run reader when VAULT_URL / CAVI_VAULT_API_SECRET / NETSUITE_REST_URL
+    are configured. Left unconfigured, the default `UnconfiguredErpWriter`
+    keeps every approved write failing closed instead of posting silently."""
+    from agents.forge.netsuite import NetSuiteClient
+    from shared.settings import get_settings
+
+    s = get_settings()
+    if s.vault_url and s.vault_api_secret and s.netsuite_rest_url:
+        client = NetSuiteClient.from_settings()
+        log.info("forge.write using NetSuite client via Vault at %s", s.vault_url)
+        return ForgeWriteAgent(writer=client, reader=client)
+    log.warning(
+        "forge.write has no NetSuite client configured (set VAULT_URL, "
+        "CAVI_VAULT_API_SECRET, NETSUITE_REST_URL); approved writes will fail closed"
+    )
+    return ForgeWriteAgent()
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    ForgeWriteAgent().run()
+    build_agent().run()

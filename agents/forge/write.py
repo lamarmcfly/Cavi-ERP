@@ -16,11 +16,17 @@ Two invariants live here, enforced by a small state machine:
     rejected write or complete one twice. Illegal moves raise `InvalidTransition`.
 
 The actual ERP call is an injected `ErpWriter`, so this layer is fully testable
-with no live ERP. A production writer would sign the request with a Vault-vended
-token and call the ERP's REST API, returning its confirmation record.
+with no live ERP; `agents/forge/netsuite.py` is the production implementation
+(Vault-signed, idempotency-keyed NetSuite REST).
+
+The dry-run diff the reviewer approves against is likewise injectable: when an
+`ErpReader` is configured, `request()` fetches the record's *current* ERP state
+and derives the before/after diff from it — the preview is computed, never
+asserted by the caller (see `render_diff`).
 """
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -115,6 +121,54 @@ class UnconfiguredErpWriter:
         )
 
 
+class ErpReader(Protocol):
+    """How the current ERP state of the record a write targets is fetched, for
+    the dry-run diff a reviewer approves against. Returns the record as the ERP
+    holds it now, or ``None`` if it does not exist yet (a create). Injected so
+    the lifecycle is testable without a live ERP; a fetch failure should raise
+    (fail closed) rather than return a guess — a proposal whose before-state is
+    unknown must not present a fabricated diff for approval."""
+
+    def fetch(self, op: "WriteOperation") -> Mapping | None: ...
+
+
+#: Preview used when no reader is configured and the caller supplied none —
+#: explicit about the gap instead of an empty string a reviewer might skim past.
+NO_DRY_RUN_PREVIEW = "(dry-run unavailable: no ERP reader configured)"
+
+
+def _fmt(value: object) -> str:
+    """Compact, deterministic rendering of a field value for the diff."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def render_diff(before: Mapping | None, op: "WriteOperation") -> str:
+    """Derive the before/after diff a reviewer signs off on.
+
+    ``before`` is the record's current ERP state (``None`` = does not exist).
+    The write is an upsert of the fields in ``op.payload``: fields not sent are
+    left untouched by the ERP, so the diff shows only additions and changes —
+    never a removal for a field merely absent from the payload.
+    """
+    exists = before is not None
+    current: Mapping = before or {}
+    header = (
+        f"{op.erp_platform} {op.target_module} eid {op.idempotency_key} — "
+        f"{op.operation} ({'updates existing record' if exists else 'no existing record'})"
+    )
+    lines: list[str] = []
+    for key in sorted(op.payload):
+        new = op.payload[key]
+        if key not in current:
+            lines.append(f"+ {key}: {_fmt(new)}")
+        elif current[key] != new:
+            lines.append(f"- {key}: {_fmt(current[key])}")
+            lines.append(f"+ {key}: {_fmt(new)}")
+    if not lines:
+        lines.append("(no field changes — ERP record already matches the payload)")
+    return "\n".join([header, *lines])
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -195,10 +249,12 @@ class WriteCoordinator:
         self,
         writer: ErpWriter | None = None,
         *,
+        reader: ErpReader | None = None,
         clock: Callable[[], str] = _now_iso,
         id_factory: Callable[[], str] = _new_write_id,
     ) -> None:
         self._writer = writer or UnconfiguredErpWriter()
+        self._reader = reader
         self._clock = clock
         self._id = id_factory
 
@@ -211,7 +267,7 @@ class WriteCoordinator:
         target_module: str,
         payload: Mapping,
         requested_by: str,
-        diff_preview: str,
+        diff_preview: str | None = None,
     ) -> WriteStep:
         op = WriteOperation(
             write_id=self._id(),
@@ -221,8 +277,17 @@ class WriteCoordinator:
             target_module=target_module,
             payload=dict(payload),
             requested_by=requested_by,
-            diff_preview=diff_preview,
+            diff_preview="",
         )
+        # With a reader configured the preview is *derived* from current ERP
+        # state — a caller-supplied string is ignored so the reviewer never
+        # approves against an asserted (possibly stale or wrong) diff. A fetch
+        # failure propagates: no proposal is recorded with a fabricated diff.
+        if self._reader is not None:
+            preview = render_diff(self._reader.fetch(op), op)
+        else:
+            preview = diff_preview if diff_preview is not None else NO_DRY_RUN_PREVIEW
+        op = replace(op, diff_preview=preview)
         return WriteStep(
             op, "forge.write.requested", requested_payload(op, requested_at=self._clock())
         )

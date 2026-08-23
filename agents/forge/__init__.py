@@ -8,6 +8,7 @@ from agents.forge.forge import (
     WorkOrderState,
 )
 from agents.forge.write import (
+    ErpReader,
     ErpWriteError,
     ErpWriter,
     UnconfiguredErpWriter,
@@ -15,6 +16,7 @@ from agents.forge.write import (
     WriteOperation,
     WriteState,
     WriteStep,
+    render_diff,
 )
 from agents.forge.write_agent import ForgeWriteAgent
 
@@ -33,6 +35,8 @@ __all__ = [
     "WriteState",
     "WriteStep",
     "ErpWriter",
+    "ErpReader",
     "ErpWriteError",
     "UnconfiguredErpWriter",
+    "render_diff",
 ]
