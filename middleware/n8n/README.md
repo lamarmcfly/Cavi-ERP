@@ -1,6 +1,6 @@
 # n8n Middleware
 
-n8n is the routing and orchestration layer that sits between the six agents.
+n8n is the routing and orchestration layer that sits between the agent fleet.
 Agents publish `Event` envelopes onto Redis pub/sub; n8n workflows subscribe,
 apply routing/branching/retry logic, and trigger downstream agents or external
 systems (email, webhooks, third-party ERPs).

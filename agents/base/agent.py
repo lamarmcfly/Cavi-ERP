@@ -99,12 +99,6 @@ class BaseAgent(abc.ABC):
           * Forward to Mapper to     -> self-healing, but risks masking real
             attempt a version coerce?    producer bugs.
 
-        TODO(you): implement the dispatch policy below. A reasonable shape:
-          1. try self.registry.validate(...) on the event
-          2. on success, call self.handle(event)
-          3. on SchemaNotFound / jsonschema.ValidationError, apply your chosen
-             failure strategy (e.g. publish to a 'deadletter.<subject>' channel
-             with the error attached, and log a warning)
         Policy (chosen): dead-letter + alert. A failed event is republished to
         `deadletter.<subject>` with the error attached and a warning is logged,
         so nothing financial is lost and Beacon can pick it up — while the bus

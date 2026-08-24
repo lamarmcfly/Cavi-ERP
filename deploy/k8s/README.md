@@ -19,9 +19,13 @@ kubectl -n cavi-erp wait --for=condition=complete job/cavi-erp-migrate
 
 ## Add the other agents
 Copy the `ledger` Deployment block, change `metadata.name`, the `app:` label, and
-the `command` (`agents.forge.agent`, `agents.ticker.agent`, `agents.mapper.agent`,
-`agents.beacon.agent`). Each exposes `/healthz` `/readyz` `/metrics` on
-`CAVI_HEALTH_PORT` via `run_agent`.
+the `command` (`agents.forge.agent`, `agents.forge.write_agent`,
+`agents.ledger.reconcile_agent`, `agents.ticker.agent`, `agents.ticker.webhook_agent`,
+`agents.mapper.agent`, `agents.beacon.agent`, …). Each exposes `/healthz` `/readyz`
+`/metrics` on `CAVI_HEALTH_PORT` via `run_agent`. The write agent
+(`agents.forge.write_agent`) additionally needs `CAVI_VAULT_URL`,
+`CAVI_VAULT_API_SECRET`, and `CAVI_NETSUITE_REST_URL` — put the secret values in
+the Secret, not the ConfigMap.
 
 ## Probes
 - **Liveness** → `/healthz` (process up).
