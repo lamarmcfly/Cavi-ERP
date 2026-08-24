@@ -3,7 +3,7 @@
 **Product:** Cavi-ERP (this repository, `lamarmcfly/Cavi-ERP`)
 **Scope:** system-of-record write-back to an external ERP (initial target: NetSuite)
 **Author:** Lamar Martin, GrayMar Strategies LLC
-**Status:** Draft, reconciled against the codebase as of this commit
+**Status:** Implemented — W1–W10 shipped (PR #20). Remaining: sandbox validation against a live NetSuite account and partner-gate sign-off (§6). Last reconciled against the codebase: 2026-08-24.
 **Relationship to cavi-core:** distinct from the read-only inventory adapter in cavi-core. Cavi-ERP is the write-capable platform. Phase 1 of the design-partner engagement (live operations pilot: inventory, POS sync, front office) runs entirely on cavi-core and is out of scope here. This PRD covers Phase 2 only.
 
 > This PRD stays subordinate to the code. If it disagrees with the code, the code wins, and the PRD gets fixed. Section 4 records what the code already implements so the epics describe the real remaining work, not a from-scratch build.
@@ -27,7 +27,7 @@
 **Non-goals (this phase)**
 - General availability. This is a supervised design-partner phase.
 - Auto-committing writes without human approval.
-- ERP targets beyond the initial one. [Confirm target: NetSuite assumed.]
+- ERP targets beyond the initial one. [Implementation target is NetSuite REST — the client is written (`agents/forge/netsuite.py`); commercial confirmation of target + version stays open with the partner.]
 - Replacing the cavi-core read-only adapter.
 
 ---
@@ -106,9 +106,9 @@ Audit of the repository at the time of this PRD. Epics in Section 6 build on thi
 
 ---
 
-## 5. Implementation plan (ordered)
+## 5. Implementation log (W1–W10 — shipped)
 
-Order is by risk: governance-critical fixes to paths that exist today come first.
+Order was by risk: governance-critical fixes to paths that existed first. All ten shipped in PR #20.
 
 - **W1 — Route ERP writes through the approval gate** (Epic 3 / FR4). **Done.** `netsuite-sync` now turns `ledger.posted` into a `forge.write.propose` (with diff preview); execution happens only after `forge.write.decision` approves, via the Forge write agent. The direct-post path is retired.
 - **W2 — ERP-side idempotency keys** (Epic 3 / FR5). **Done.** `WriteOperation.idempotency_key` (`cavi-{write_id}`, stable across retries) is required by the `ErpWriter` contract; `test_retry_after_lost_response_does_not_double_post` proves exactly-once against an ERP that honors the key.
@@ -167,7 +167,7 @@ No epic is considered done, and no downstream epic starts trusting its output, u
 
 ## 7. Open questions for the design partner
 
-- Confirmed target ERP and version. [NetSuite assumed.]
+- Confirmed target ERP and version. [Implementation target is NetSuite REST and the code is written; the commercial confirmation is still open.]
 - Deployment model: GrayMar-hosted vs client-tenant.
 - Which record types are in scope for write-back in the first phase. [Working assumption from the reference use case: lot-numbered items, inventory adjustments, transfer orders; journal entries via the existing Ledger path.]
 - Acceptable reconciliation window and drift tolerance (fills NFR4).
@@ -180,6 +180,6 @@ Commercial terms (plan, fees, founding-partner discount, IP ownership) live in t
 
 ## 8. Sources of truth
 
-- **This repository:** the code is the authoritative signal for what is live. Anchors: `README.md`, `agents/`, `schema_registry/` (the event contracts), `middleware/n8n/workflows/`.
+- **This repository:** the code is the authoritative signal for what is live. Anchors: `agents/forge/write.py` (approval gate + lifecycle), `shared/audit.py` (hash chain), `agents/`, `schema_registry/` (the event contracts), `middleware/n8n/workflows/`, `docker-compose.yml` (what actually runs).
 - **cavi-core (separate repo):** live capability and price surfaces referenced by the engagement — `lib/marketplace/systems.ts`, `lib/pricing/plans.ts`, `lib/services/service-cards.ts`, `CAVI_STATUS.md`, `foundation/CAVI_ROADMAP.md`. Those files do not exist here; do not cite them as paths in this repo.
 - If this PRD disagrees with the code, the code wins.
